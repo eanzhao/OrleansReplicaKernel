@@ -318,8 +318,7 @@ OrleansReplicaKernelHost CreateHost(OrleansReplicaKernelRuntimeCheckpoint? check
         .WithMembershipStabilizationWindow(stabilizationWindow)
         .WithMembershipGossipFanout(gossipFanout)
         .WithMembershipAntiEntropyInterval(antiEntropyInterval)
-        .AddObjectReference<IEchoObserver>(
-            static (runtime, grainId) => new EchoObserverReference(runtime, grainId))
+        .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
         .AddGrain<IEchoGrain, EchoGrain>(
             grainType: "echo",
             grainFactory: static () => new EchoGrain(),

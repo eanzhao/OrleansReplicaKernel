@@ -1,3 +1,4 @@
+using System.Reflection;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Routing;
@@ -9,6 +10,7 @@ public sealed class OrleansReplicaKernelBuilder
 {
     private readonly Dictionary<Type, GrainRegistration> _registrations = new();
     private readonly Dictionary<Type, ObjectReferenceRegistration> _objectReferenceRegistrations = new();
+    private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
     private int _membershipGossipFanout = 1;
     private int _membershipAntiEntropyInterval = 4;
@@ -39,12 +41,20 @@ public sealed class OrleansReplicaKernelBuilder
         Func<IInvocationRuntime, GrainId, TInterface> referenceFactory)
         where TInterface : class
     {
-        _objectReferenceRegistrations.Add(
+        AddObjectReference(
             typeof(TInterface),
-            new ObjectReferenceRegistration(
-                typeof(TInterface),
-                (runtime, grainId) => referenceFactory(runtime, grainId)));
+            (runtime, grainId) => referenceFactory(runtime, grainId),
+            isGenerated: false,
+            replaceExisting: false,
+            sourceDescription: $"manual registration for '{typeof(TInterface).Name}'");
 
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder AddGeneratedObjectReferencesFromAssembly(Assembly assembly)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        _generatedObjectReferenceAssemblies.Add(assembly);
         return this;
     }
 
@@ -125,6 +135,8 @@ public sealed class OrleansReplicaKernelBuilder
 
     public OrleansReplicaKernelHost Build(string nodeName, params string[] peerNodeNames)
     {
+        RegisterGeneratedObjectReferences();
+
         var requestedNodeNames = new[] { nodeName }
             .Concat(peerNodeNames)
             .Distinct(StringComparer.Ordinal)
@@ -286,6 +298,118 @@ public sealed class OrleansReplicaKernelBuilder
             bindings);
     }
 
+    private void RegisterGeneratedObjectReferences()
+    {
+        foreach (var assembly in _generatedObjectReferenceAssemblies)
+        {
+            foreach (var generatedType in GetLoadableTypes(assembly))
+            {
+                if (generatedType is null || !generatedType.IsClass || generatedType.IsAbstract)
+                {
+                    continue;
+                }
+
+                foreach (var attribute in generatedType.GetCustomAttributes<GeneratedObjectReferenceAttribute>())
+                {
+                    ValidateGeneratedObjectReference(generatedType, attribute.InterfaceType);
+
+                    if (_objectReferenceRegistrations.TryGetValue(attribute.InterfaceType, out var existingRegistration)
+                        && !existingRegistration.IsGenerated)
+                    {
+                        continue;
+                    }
+
+                    var constructor = generatedType.GetConstructor([typeof(IInvocationRuntime), typeof(GrainId)]);
+                    AddObjectReference(
+                        attribute.InterfaceType,
+                        (runtime, grainId) => constructor!.Invoke([runtime, grainId]),
+                        isGenerated: true,
+                        replaceExisting: false,
+                        sourceDescription:
+                        $"generated object reference '{generatedType.FullName}' in assembly '{assembly.GetName().Name}'");
+                }
+            }
+        }
+    }
+
+    private void AddObjectReference(
+        Type contractType,
+        Func<IInvocationRuntime, GrainId, object> referenceFactory,
+        bool isGenerated,
+        bool replaceExisting,
+        string sourceDescription)
+    {
+        if (replaceExisting)
+        {
+            _objectReferenceRegistrations[contractType] = new ObjectReferenceRegistration(
+                contractType,
+                referenceFactory,
+                isGenerated,
+                sourceDescription);
+            return;
+        }
+
+        if (_objectReferenceRegistrations.TryGetValue(contractType, out var existingRegistration))
+        {
+            if (existingRegistration.IsGenerated
+                && isGenerated
+                && string.Equals(existingRegistration.SourceDescription, sourceDescription, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (existingRegistration.IsGenerated && isGenerated)
+            {
+                throw new InvalidOperationException(
+                    $"Multiple generated object reference registrations were found for '{contractType.FullName}': '{existingRegistration.SourceDescription}' and '{sourceDescription}'.");
+            }
+
+            throw new InvalidOperationException(
+                $"Object reference '{contractType.FullName}' is already registered by '{existingRegistration.SourceDescription}'.");
+        }
+
+        _objectReferenceRegistrations.Add(
+            contractType,
+            new ObjectReferenceRegistration(
+                contractType,
+                referenceFactory,
+                isGenerated,
+                sourceDescription));
+    }
+
+    private static void ValidateGeneratedObjectReference(Type generatedType, Type interfaceType)
+    {
+        if (!typeof(IObjectReference).IsAssignableFrom(generatedType))
+        {
+            throw new InvalidOperationException(
+                $"Generated object reference '{generatedType.FullName}' must implement '{nameof(IObjectReference)}'.");
+        }
+
+        if (!interfaceType.IsAssignableFrom(generatedType))
+        {
+            throw new InvalidOperationException(
+                $"Generated object reference '{generatedType.FullName}' must implement '{interfaceType.FullName}'.");
+        }
+
+        if (generatedType.GetConstructor([typeof(IInvocationRuntime), typeof(GrainId)]) is null)
+        {
+            throw new InvalidOperationException(
+                $"Generated object reference '{generatedType.FullName}' must expose a public constructor '(IInvocationRuntime, GrainId)'.");
+        }
+    }
+
+    private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+    {
+        try
+        {
+            return assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException exception)
+        {
+            return exception.Types.Where(type => type is not null)!;
+        }
+    }
+
     private sealed record GrainRegistration(
         Type ContractType,
         string GrainType,
@@ -294,5 +418,7 @@ public sealed class OrleansReplicaKernelBuilder
 
     private sealed record ObjectReferenceRegistration(
         Type ContractType,
-        Func<IInvocationRuntime, GrainId, object> ReferenceFactory);
+        Func<IInvocationRuntime, GrainId, object> ReferenceFactory,
+        bool IsGenerated,
+        string SourceDescription);
 }

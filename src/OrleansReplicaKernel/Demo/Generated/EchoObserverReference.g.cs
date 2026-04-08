@@ -5,6 +5,7 @@ using OrleansReplicaKernel.Runtime;
 
 namespace OrleansReplicaKernel.Demo;
 
+[GeneratedObjectReference(typeof(IEchoObserver))]
 public sealed partial class EchoObserverReference : IEchoObserver
 {
     public Task OnEchoAsync(string value, CancellationToken cancellationToken = default)
