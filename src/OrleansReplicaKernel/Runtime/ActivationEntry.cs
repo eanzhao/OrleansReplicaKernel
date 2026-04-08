@@ -1,5 +1,6 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
+using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Scheduling;
@@ -55,6 +56,7 @@ public sealed class ActivationEntry : IAsyncDisposable
 
     public async ValueTask<object?> InvokeAsync(
         InvocationMessage message,
+        IInvocationRuntime runtime,
         CancellationToken cancellationToken)
     {
         while (true)
@@ -84,11 +86,13 @@ public sealed class ActivationEntry : IAsyncDisposable
         {
             return await _scheduler.EnqueueAsync(
                 $"{message.Invokable.InterfaceName}.{message.Invokable.MethodName}",
-                async turnToken =>
-                {
-                    TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");
-                    return await message.Invokable.InvokeAsync(_instance, turnToken);
-                },
+                turnToken => ActivationExecutionContext.RunAsync(
+                    runtime,
+                    async () =>
+                    {
+                        TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");
+                        return await message.Invokable.InvokeAsync(_instance, turnToken);
+                    }),
                 cancellationToken);
         }
         finally

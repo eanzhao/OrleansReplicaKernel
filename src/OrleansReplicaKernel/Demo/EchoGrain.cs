@@ -35,6 +35,20 @@ public sealed class EchoGrain : IEchoGrain, IActivationHandoffParticipant
         return $"echo:{text}:count={_callCount}";
     }
 
+    public async Task<string> PingWithObserverAsync(
+        string text,
+        IEchoObserver observer,
+        CancellationToken cancellationToken = default)
+    {
+        _callCount++;
+        var value = $"observer:{text}:count={_callCount}";
+        TraceLog.Write("grain", $"EchoGrain handle PingWithObserverAsync(\"{text}\") count={_callCount}");
+
+        await observer.OnEchoAsync(value, cancellationToken);
+
+        return $"echo:{text}:count={_callCount}";
+    }
+
     public object CaptureHandoffState()
     {
         var failureReason = Interlocked.Exchange(ref _nextCaptureFailureReason, null);

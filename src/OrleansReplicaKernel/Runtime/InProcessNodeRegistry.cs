@@ -51,6 +51,36 @@ public sealed class InProcessNodeRegistry
             if (_nodes.TryGetValue(nodeName, out var node))
             {
                 node.NextDroppedResponseReason = reason;
+                node.NextDroppedResponseReplayDelay = null;
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
+    }
+
+    public void DropNextResponseAndReplayLater(string nodeName, TimeSpan replayDelay, string reason)
+    {
+        lock (_lock)
+        {
+            if (_nodes.TryGetValue(nodeName, out var node))
+            {
+                node.NextDroppedResponseReason = reason;
+                node.NextDroppedResponseReplayDelay = replayDelay;
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
+    }
+
+    public void DuplicateNextResponse(string nodeName, TimeSpan duplicateDelay)
+    {
+        lock (_lock)
+        {
+            if (_nodes.TryGetValue(nodeName, out var node))
+            {
+                node.NextDuplicateResponseDelay = duplicateDelay;
                 return;
             }
         }
@@ -81,12 +111,20 @@ public sealed class InProcessNodeRegistry
             var nextDroppedResponseReason = targetNode.NextDroppedResponseReason;
             targetNode.NextDroppedResponseReason = null;
 
+            var nextDroppedResponseReplayDelay = targetNode.NextDroppedResponseReplayDelay;
+            targetNode.NextDroppedResponseReplayDelay = null;
+
+            var nextDuplicateResponseDelay = targetNode.NextDuplicateResponseDelay;
+            targetNode.NextDuplicateResponseDelay = null;
+
             return new DispatchPlan(
                 targetNode.RequestReceiver,
                 sourceNode.ResponseReceiver,
                 delay,
                 nextResponseError,
-                nextDroppedResponseReason);
+                nextDroppedResponseReason,
+                nextDroppedResponseReplayDelay,
+                nextDuplicateResponseDelay);
         }
     }
 
@@ -151,7 +189,9 @@ public sealed class InProcessNodeRegistry
         IResponseReceiver ResponseReceiver,
         TimeSpan? Delay,
         Exception? ResponseError,
-        string? DroppedResponseReason);
+        string? DroppedResponseReason,
+        TimeSpan? DroppedResponseReplayDelay,
+        TimeSpan? DuplicateResponseDelay);
 
     private sealed class NodeState
     {
@@ -172,6 +212,10 @@ public sealed class InProcessNodeRegistry
         public Exception? NextResponseError { get; set; }
 
         public string? NextDroppedResponseReason { get; set; }
+
+        public TimeSpan? NextDroppedResponseReplayDelay { get; set; }
+
+        public TimeSpan? NextDuplicateResponseDelay { get; set; }
 
         public bool IsProbeReachable { get; set; } = true;
 

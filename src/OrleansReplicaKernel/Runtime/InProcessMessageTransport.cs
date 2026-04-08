@@ -48,6 +48,7 @@ public sealed class InProcessMessageTransport : IMessageTransport
                 new InvocationResponseMessage(
                     message.RequestId,
                     message.AttemptId,
+                    message.AttemptSequence,
                     message.Target.NodeName,
                     null,
                     dispatch.ResponseError),
@@ -59,6 +60,15 @@ public sealed class InProcessMessageTransport : IMessageTransport
 
         if (dispatch.DroppedResponseReason is { } droppedResponseReason)
         {
+            if (dispatch.DroppedResponseReplayDelay is { } replayDelay)
+            {
+                ReplayResponseLater(
+                    dispatch.ResponseReceiver,
+                    response,
+                    replayDelay,
+                    "replay dropped");
+            }
+
             TraceLog.Write(
                 "transport",
                 $"drop response {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}: {droppedResponseReason}");
@@ -70,5 +80,44 @@ public sealed class InProcessMessageTransport : IMessageTransport
             $"receive response {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}");
 
         await dispatch.ResponseReceiver.ReceiveResponseAsync(response, CancellationToken.None);
+
+        if (dispatch.DuplicateResponseDelay is { } duplicateDelay)
+        {
+            ReplayResponseLater(
+                dispatch.ResponseReceiver,
+                response,
+                duplicateDelay,
+                "duplicate");
+        }
+    }
+
+    private static void ReplayResponseLater(
+        IResponseReceiver responseReceiver,
+        InvocationResponseMessage response,
+        TimeSpan delay,
+        string mode)
+    {
+        _ = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    if (delay > TimeSpan.Zero)
+                    {
+                        await Task.Delay(delay, CancellationToken.None);
+                    }
+
+                    TraceLog.Write(
+                        "transport",
+                        $"{mode} response {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName} after {delay}");
+                    await responseReceiver.ReceiveResponseAsync(response, CancellationToken.None);
+                }
+                catch (Exception exception)
+                {
+                    TraceLog.Write(
+                        "transport",
+                        $"{mode} response {response.RequestId:N}/{response.AttemptId:N} failed: {exception.GetType().Name}: {exception.Message}");
+                }
+            });
     }
 }

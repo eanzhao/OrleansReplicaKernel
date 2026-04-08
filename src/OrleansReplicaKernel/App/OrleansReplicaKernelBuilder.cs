@@ -8,9 +8,12 @@ namespace OrleansReplicaKernel.App;
 public sealed class OrleansReplicaKernelBuilder
 {
     private readonly Dictionary<Type, GrainRegistration> _registrations = new();
+    private readonly Dictionary<Type, ObjectReferenceRegistration> _objectReferenceRegistrations = new();
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
     private int _membershipGossipFanout = 1;
     private int _membershipAntiEntropyInterval = 4;
+    private TimeProvider _timeProvider = TimeProvider.System;
+    private TimeSpan _responseHistoryRetention = TimeSpan.FromMinutes(5);
     private OrleansReplicaKernelMembershipCheckpoint? _membershipCheckpoint;
     private OrleansReplicaKernelRuntimeCheckpoint? _runtimeCheckpoint;
 
@@ -27,6 +30,19 @@ public sealed class OrleansReplicaKernelBuilder
                 typeof(TContract),
                 grainType,
                 () => grainFactory(),
+                (runtime, grainId) => referenceFactory(runtime, grainId)));
+
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder AddObjectReference<TInterface>(
+        Func<IInvocationRuntime, GrainId, TInterface> referenceFactory)
+        where TInterface : class
+    {
+        _objectReferenceRegistrations.Add(
+            typeof(TInterface),
+            new ObjectReferenceRegistration(
+                typeof(TInterface),
                 (runtime, grainId) => referenceFactory(runtime, grainId)));
 
         return this;
@@ -66,6 +82,25 @@ public sealed class OrleansReplicaKernelBuilder
         }
 
         _membershipAntiEntropyInterval = tickInterval;
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder WithTimeProvider(TimeProvider timeProvider)
+    {
+        _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder WithResponseHistoryRetention(TimeSpan retention)
+    {
+        if (retention < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(retention),
+                "Response history retention must be non-negative.");
+        }
+
+        _responseHistoryRetention = retention;
         return this;
     }
 
@@ -134,7 +169,8 @@ public sealed class OrleansReplicaKernelBuilder
                 currentNodeName => currentNodeName,
                 currentNodeName => new GossipedClusterMembershipView(
                     currentNodeName,
-                    _membershipStabilizationWindow),
+                    _membershipStabilizationWindow,
+                    _timeProvider),
                 StringComparer.Ordinal)
             : allNodeNames.ToDictionary(
                 currentNodeName => currentNodeName,
@@ -150,7 +186,8 @@ public sealed class OrleansReplicaKernelBuilder
 
                     return GossipedClusterMembershipView.Restore(
                         viewCheckpoint,
-                        _membershipStabilizationWindow);
+                        _membershipStabilizationWindow,
+                        _timeProvider);
                 },
                 StringComparer.Ordinal);
 
@@ -186,21 +223,38 @@ public sealed class OrleansReplicaKernelBuilder
         var probeService = new InProcessClusterProbeService(nodeName, membership, nodeRegistry, failureDetector);
         var locators = new Dictionary<string, IGrainLocator>(StringComparer.Ordinal);
         var runtimes = new Dictionary<string, InProcessRuntime>(StringComparer.Ordinal);
+        var callbackDirectories = new Dictionary<string, LocalCallbackDirectory>(StringComparer.Ordinal);
+        var objectReferenceFactoryRegistry = new ObjectReferenceFactoryRegistry(
+            _objectReferenceRegistrations.ToDictionary(
+                item => ObjectReferenceFactoryRegistry.GetInterfaceNameFromType(item.Key),
+                item => item.Value.ReferenceFactory,
+                StringComparer.Ordinal));
 
         foreach (var currentNodeName in allNodeNames)
         {
             var transport = new InProcessMessageTransport(membershipViews[currentNodeName], nodeRegistry);
             var locator = new DirectoryGrainLocator(grainDirectory);
+            var callbackDirectory = new LocalCallbackDirectory();
             var activationCheckpoint = runtimeCheckpoint?.ActivationDirectories
                 .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));
             var activationDirectory = activationCheckpoint is null
-                ? new LocalActivationDirectory(grainFactories)
-                : LocalActivationDirectory.Restore(grainFactories, activationCheckpoint);
+                ? new LocalActivationDirectory(grainFactories, callbackDirectory)
+                : LocalActivationDirectory.Restore(grainFactories, callbackDirectory, activationCheckpoint);
             var router = new LocalGrainRouter(currentNodeName, locator);
-            var runtime = new InProcessRuntime(currentNodeName, failureDetector, locator, router, activationDirectory, transport);
+            var runtime = new InProcessRuntime(
+                currentNodeName,
+                failureDetector,
+                locator,
+                router,
+                activationDirectory,
+                transport,
+                objectReferenceFactoryRegistry,
+                _timeProvider,
+                _responseHistoryRetention);
 
             locators.Add(currentNodeName, locator);
             activationDirectories.Add(currentNodeName, activationDirectory);
+            callbackDirectories.Add(currentNodeName, callbackDirectory);
             runtimes.Add(currentNodeName, runtime);
             nodeRegistry.Register(currentNodeName, runtime, runtime);
         }
@@ -223,7 +277,12 @@ public sealed class OrleansReplicaKernelBuilder
             membershipViews,
             locators,
             activationDirectories,
-            runtimes.Values.Cast<IAsyncDisposable>().ToArray(),
+            callbackDirectories,
+            objectReferenceFactoryRegistry,
+            runtimes,
+            runtimes.Values.Cast<IAsyncDisposable>()
+                .Concat(callbackDirectories.Values)
+                .ToArray(),
             bindings);
     }
 
@@ -231,5 +290,9 @@ public sealed class OrleansReplicaKernelBuilder
         Type ContractType,
         string GrainType,
         Func<object> GrainFactory,
+        Func<IInvocationRuntime, GrainId, object> ReferenceFactory);
+
+    private sealed record ObjectReferenceRegistration(
+        Type ContractType,
         Func<IInvocationRuntime, GrainId, object> ReferenceFactory);
 }

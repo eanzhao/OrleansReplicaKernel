@@ -91,6 +91,63 @@ try
     TraceLog.Write("result", $"echo-late-response-timeout = {lateResponseTimeoutResult}");
     TraceLog.Write("result", $"echo-late-response-after-timeout = {lateResponseAfterTimeout}");
 
+    var responseOrderingEcho = host.GetGrain<IEchoGrain>("response-ordering");
+    var responseOrderingSeed = await responseOrderingEcho.PingAsync("response-ordering-seed");
+
+    Console.WriteLine();
+    TraceLog.Write("app", "move response-ordering owner to remote node dev-node-2");
+    await host.SetOwnerAsync<IEchoGrain>("response-ordering", "dev-node-2");
+    TraceLog.Write("app", "drop the next response from dev-node-2, but replay it later so the retry wins and the old response becomes stale");
+    host.DropNextResponseAndReplayLater(
+        "dev-node-2",
+        TimeSpan.FromMilliseconds(150),
+        "simulated dropped response that leaks back later");
+    var responseOrderingAfterStaleReplay = await responseOrderingEcho.PingAsync("after-stale-response");
+    await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+    Console.WriteLine();
+    TraceLog.Write("app", "duplicate the next successful response from dev-node-2 after the caller has already completed");
+    host.DuplicateNextResponse("dev-node-2", TimeSpan.FromMilliseconds(120));
+    var responseOrderingAfterDuplicate = await responseOrderingEcho.PingAsync("after-duplicate-response");
+    await Task.Delay(TimeSpan.FromMilliseconds(160));
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-response-ordering-seed = {responseOrderingSeed}");
+    TraceLog.Write("result", $"echo-response-ordering-after-stale = {responseOrderingAfterStaleReplay}");
+    TraceLog.Write("result", $"echo-response-ordering-after-duplicate = {responseOrderingAfterDuplicate}");
+    TraceLog.Write("result", $"response-disposition-before-runtime-checkpoint[dev-node-1] = {host.DescribeResponseDisposition("dev-node-1")}");
+
+    var callbackEcho = host.GetGrain<IEchoGrain>("callback");
+    var callbackObserver = new RecordingEchoObserver();
+    await using var callbackLease = host.CreateObjectReference<IEchoObserver>(
+        callbackType: "echo-observer",
+        implementation: callbackObserver);
+
+    Console.WriteLine();
+    TraceLog.Write("app", "move callback owner to remote node dev-node-2, then let the remote grain call back into a source-node callback target");
+    await host.SetOwnerAsync<IEchoGrain>("callback", "dev-node-2");
+    var callbackResult = await callbackEcho.PingWithObserverAsync("callback-roundtrip", callbackLease.Handle);
+    var callbackMessages = callbackObserver.Describe();
+
+    var staleCallbackHandle = callbackLease.Handle;
+    await callbackLease.DisposeAsync();
+
+    string callbackAfterDispose;
+    try
+    {
+        await callbackEcho.PingWithObserverAsync("callback-after-dispose", staleCallbackHandle);
+        callbackAfterDispose = "<unexpected-success>";
+    }
+    catch (InvalidOperationException exception)
+    {
+        callbackAfterDispose = exception.Message;
+    }
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-callback-result = {callbackResult}");
+    TraceLog.Write("result", $"echo-callback-messages = {callbackMessages}");
+    TraceLog.Write("result", $"echo-callback-after-dispose = {callbackAfterDispose}");
+
     host.FailNextProbe("dev-node-2", "heartbeat miss #1");
     await host.RunProbeTickAsync();
     LogDeliveries("fanout-1", host.RunGossipTick());
@@ -229,6 +286,13 @@ try
     TraceLog.Write("result", $"echo-late-response-seed = {lateResponseSeed}");
     TraceLog.Write("result", $"echo-late-response-timeout = {lateResponseTimeoutResult}");
     TraceLog.Write("result", $"echo-late-response-after-timeout = {lateResponseAfterTimeout}");
+    TraceLog.Write("result", $"echo-response-ordering-seed = {responseOrderingSeed}");
+    TraceLog.Write("result", $"echo-response-ordering-after-stale = {responseOrderingAfterStaleReplay}");
+    TraceLog.Write("result", $"echo-response-ordering-after-duplicate = {responseOrderingAfterDuplicate}");
+    TraceLog.Write("result", $"echo-callback-result = {callbackResult}");
+    TraceLog.Write("result", $"echo-callback-messages = {callbackMessages}");
+    TraceLog.Write("result", $"echo-callback-after-dispose = {callbackAfterDispose}");
+    TraceLog.Write("result", $"response-disposition-after-runtime-checkpoint[dev-node-1] = {host.DescribeResponseDisposition("dev-node-1")}");
     TraceLog.Write("result", $"counter-before-runtime-checkpoint-first = {counterBeforeCheckpointFirst}");
     TraceLog.Write("result", $"counter-before-runtime-checkpoint-second = {counterBeforeCheckpointSecond}");
     TraceLog.Write("result", $"echo-after-runtime-checkpoint = {recoveredEcho}");
@@ -254,6 +318,8 @@ OrleansReplicaKernelHost CreateHost(OrleansReplicaKernelRuntimeCheckpoint? check
         .WithMembershipStabilizationWindow(stabilizationWindow)
         .WithMembershipGossipFanout(gossipFanout)
         .WithMembershipAntiEntropyInterval(antiEntropyInterval)
+        .AddObjectReference<IEchoObserver>(
+            static (runtime, grainId) => new EchoObserverReference(runtime, grainId))
         .AddGrain<IEchoGrain, EchoGrain>(
             grainType: "echo",
             grainFactory: static () => new EchoGrain(),

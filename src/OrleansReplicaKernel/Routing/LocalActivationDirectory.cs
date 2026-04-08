@@ -11,22 +11,27 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         ActivationHandoffRecord Record);
 
     private readonly object _lock = new();
+    private readonly LocalCallbackDirectory _callbackDirectory;
     private readonly IReadOnlyDictionary<string, Func<object>> _grainFactories;
     private readonly Dictionary<GrainId, ActivationEntry> _activations = new();
     private readonly Dictionary<GrainId, PendingHandoffState> _pendingHandoffStates = new();
     private readonly Dictionary<GrainId, ActivationMetadataRecord> _recoveredMetadata = new();
     private readonly Dictionary<GrainId, long> _fencedOwnerVersions = new();
 
-    public LocalActivationDirectory(IReadOnlyDictionary<string, Func<object>> grainFactories)
-        : this(grainFactories, checkpoint: null)
+    public LocalActivationDirectory(
+        IReadOnlyDictionary<string, Func<object>> grainFactories,
+        LocalCallbackDirectory callbackDirectory)
+        : this(grainFactories, callbackDirectory, checkpoint: null)
     {
     }
 
     private LocalActivationDirectory(
         IReadOnlyDictionary<string, Func<object>> grainFactories,
+        LocalCallbackDirectory callbackDirectory,
         ActivationDirectoryCheckpoint? checkpoint)
     {
         _grainFactories = grainFactories;
+        _callbackDirectory = callbackDirectory;
 
         if (checkpoint is null)
         {
@@ -42,6 +47,11 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
     public ActivationEntry GetOrCreate(GrainAddress address)
     {
+        if (CallbackTargetIdentity.IsCallback(address.GrainId))
+        {
+            return _callbackDirectory.GetRequired(address.GrainId);
+        }
+
         lock (_lock)
         {
             if (TryRejectStaleRequest(address))
@@ -333,8 +343,9 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
     public static LocalActivationDirectory Restore(
         IReadOnlyDictionary<string, Func<object>> grainFactories,
+        LocalCallbackDirectory callbackDirectory,
         ActivationDirectoryCheckpoint checkpoint)
-        => new(grainFactories, checkpoint);
+        => new(grainFactories, callbackDirectory, checkpoint);
 
     private bool TryRejectStaleRequest(GrainAddress address)
     {

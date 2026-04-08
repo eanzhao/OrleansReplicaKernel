@@ -20,6 +20,9 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
     private readonly IReadOnlyDictionary<string, GossipedClusterMembershipView> _membershipViews;
     private readonly IReadOnlyDictionary<string, IGrainLocator> _locators;
     private readonly IReadOnlyDictionary<string, IActivationDirectory> _activationDirectories;
+    private readonly IReadOnlyDictionary<string, LocalCallbackDirectory> _callbackDirectories;
+    private readonly ObjectReferenceFactoryRegistry _objectReferenceFactoryRegistry;
+    private readonly IReadOnlyDictionary<string, InProcessRuntime> _runtimes;
     private readonly IReadOnlyList<IAsyncDisposable> _managedNodes;
     private readonly IReadOnlyDictionary<Type, OrleansReplicaKernelRegistration> _registrations;
 
@@ -37,6 +40,9 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         IReadOnlyDictionary<string, GossipedClusterMembershipView> membershipViews,
         IReadOnlyDictionary<string, IGrainLocator> locators,
         IReadOnlyDictionary<string, IActivationDirectory> activationDirectories,
+        IReadOnlyDictionary<string, LocalCallbackDirectory> callbackDirectories,
+        ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
+        IReadOnlyDictionary<string, InProcessRuntime> runtimes,
         IReadOnlyList<IAsyncDisposable> managedNodes,
         IReadOnlyDictionary<Type, OrleansReplicaKernelRegistration> registrations)
     {
@@ -53,6 +59,9 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         _membershipViews = membershipViews;
         _locators = locators;
         _activationDirectories = activationDirectories;
+        _callbackDirectories = callbackDirectories;
+        _objectReferenceFactoryRegistry = objectReferenceFactoryRegistry;
+        _runtimes = runtimes;
         _managedNodes = managedNodes;
         _registrations = registrations;
     }
@@ -70,6 +79,44 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         TraceLog.Write("app", $"get grain {typeof(TContract).Name} -> {grainId}");
         return (TContract)registrationObject.ReferenceFactory(_runtime, grainId);
     }
+
+    public CallbackLease<THandle> RegisterCallbackTarget<THandle>(
+        string callbackType,
+        object implementation,
+        Func<GrainId, THandle> handleFactory)
+    {
+        if (!_callbackDirectories.TryGetValue(_nodeName, out var callbackDirectory))
+        {
+            throw new InvalidOperationException($"No callback directory registered for '{_nodeName}'.");
+        }
+
+        var callbackGrainId = callbackDirectory.Register(_nodeName, callbackType, implementation);
+        var handle = handleFactory(callbackGrainId);
+
+        return new CallbackLease<THandle>(
+            callbackGrainId,
+            handle,
+            grainId => DeleteCallbackTargetAsync(grainId));
+    }
+
+    public CallbackLease<TObserver> CreateObserverReference<TObserver>(
+        string callbackType,
+        TObserver implementation,
+        Func<IInvocationRuntime, GrainId, TObserver> referenceFactory)
+        where TObserver : class
+        => RegisterCallbackTarget(
+            callbackType,
+            implementation,
+            grainId => referenceFactory(_runtime, grainId));
+
+    public CallbackLease<TObjectReference> CreateObjectReference<TObjectReference>(
+        string callbackType,
+        object implementation)
+        where TObjectReference : class
+        => RegisterCallbackTarget(
+            callbackType,
+            implementation,
+            grainId => _objectReferenceFactoryRegistry.Create<TObjectReference>(_runtime, grainId));
 
     public async ValueTask<bool> DeactivateGrainAsync<TContract>(string key)
         where TContract : class
@@ -342,6 +389,34 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         TraceLog.Write("app", $"drop next response on {nodeName}: {reason}");
     }
 
+    public void DropNextResponseAndReplayLater(string nodeName, TimeSpan delay, string reason)
+    {
+        _nodeRegistry.DropNextResponseAndReplayLater(nodeName, delay, reason);
+        TraceLog.Write("app", $"drop next response on {nodeName}, then replay after {delay}: {reason}");
+    }
+
+    public void DuplicateNextResponse(string nodeName, TimeSpan delay)
+    {
+        _nodeRegistry.DuplicateNextResponse(nodeName, delay);
+        TraceLog.Write("app", $"duplicate next response on {nodeName} after {delay}");
+    }
+
+    public ResponseDispositionSnapshot GetResponseDispositionSnapshot(string nodeName)
+    {
+        if (!_runtimes.TryGetValue(nodeName, out var runtime))
+        {
+            throw new InvalidOperationException($"No runtime registered for '{nodeName}'.");
+        }
+
+        return runtime.GetResponseDispositionSnapshot();
+    }
+
+    public string DescribeResponseDisposition(string nodeName)
+    {
+        var snapshot = GetResponseDispositionSnapshot(nodeName);
+        return $"accepted={snapshot.AcceptedResponses}, late={snapshot.LateResponses}, stale={snapshot.StaleResponses}, duplicate={snapshot.DuplicateResponses}, pending={snapshot.PendingResponses}, source={snapshot.TrackedSourceRequests}, target={snapshot.CompletedTargetRequests}";
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var managedNode in _managedNodes)
@@ -370,6 +445,16 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         }
 
         return await activationDirectory.DeactivateAsync(address);
+    }
+
+    private async ValueTask DeleteCallbackTargetAsync(GrainId grainId)
+    {
+        if (!_callbackDirectories.TryGetValue(_nodeName, out var callbackDirectory))
+        {
+            throw new InvalidOperationException($"No callback directory registered for '{_nodeName}'.");
+        }
+
+        await callbackDirectory.UnregisterAsync(grainId);
     }
 
     private async ValueTask MoveOwnerAsync(

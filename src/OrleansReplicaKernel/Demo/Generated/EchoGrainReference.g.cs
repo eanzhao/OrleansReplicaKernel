@@ -17,4 +17,13 @@ public sealed partial class EchoGrainReference : IEchoGrain
         var invokable = new EchoPingSlowInvokable(text, delayMs);
         return _runtime.InvokeAsync<string>(_grainId, invokable, cancellationToken).AsTask();
     }
+
+    public Task<string> PingWithObserverAsync(
+        string text,
+        IEchoObserver observer,
+        CancellationToken cancellationToken = default)
+    {
+        var invokable = new EchoPingWithObserverInvokable(text, observer);
+        return _runtime.InvokeAsync<string>(_grainId, invokable, cancellationToken).AsTask();
+    }
 }

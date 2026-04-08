@@ -76,6 +76,7 @@ public sealed class LocalActivationDirectoryTests
             {
                 ["TestGrain"] = restoredFactory.Create,
             },
+            new LocalCallbackDirectory(),
             checkpoint);
 
         Assert.Throws<StaleGrainAddressException>(
@@ -92,7 +93,8 @@ public sealed class LocalActivationDirectoryTests
             new Dictionary<string, Func<object>>
             {
                 ["TestGrain"] = factory.Create,
-            });
+            },
+            new LocalCallbackDirectory());
 
     private sealed class TrackingHandoffGrainFactory
     {

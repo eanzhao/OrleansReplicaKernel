@@ -11,6 +11,10 @@
 - grain identity、address、invocation、message、routing、runtime 这些核心分层已经拆开。
 - 单进程内的多节点模拟已经有了，远端转发和响应回包也已经打通。
 - grain directory、locator、owner 迁移、缓存失效这条链已经有最小实现。
+- callback target / observer 这条反向调用链已经有第一版最小实现，远端 grain 已经能通过 runtime 回调 source node 本地注册对象。
+- observer reference 已经有第一版透明 API，grain 端现在可以直接拿强类型 observer reference 发回调，而不是手工传裸 handle。
+- object reference 的第一版“表示 -> 目标端 rehydrate”边界已经补上，observer reference 不再依赖对象本体直接过 invocation 边界。
+- object reference factory registry 已经接进 builder / host / runtime，typed object reference 的创建和目标端重建现在共用一份注册表。
 - membership 的早期主链已经有了：
   `probe -> failure detector -> authoritative membership -> gossip dissemination -> local membership view -> stabilization`
 - partial fanout 和 anti-entropy 这两类 dissemination 行为已经有最小实现。
@@ -45,6 +49,7 @@
 - 真正的 placement 策略体系、跨节点负载统计、正式的 rebalancing/handoff 协议还没做完整。
 - 真正的 state storage provider、persistent state、事务、streaming、reminder、timer、provider 生态都还没进入实现阶段。
 - 真正的 client、gateway、序列化运行时、代码生成器、application part、provider 装配体系还没接到当前内核里。
+- 真正完整的 object reference / observer 序列化协议、跨进程 rehydration、callback 与 client/gateway 的正式接线还没做完。
 - 真正的故障恢复、节点重启恢复、rolling upgrade、兼容性和版本演进都还没有正式实现。
 - 真正的可观测性、诊断、管理面、系统 target、测试基建和性能基准还没有迁进这个新仓库。
 - 真正的线上级别 fencing、stale message rejection、rollback orchestration、handoff state serialization/transport 还没做完整。

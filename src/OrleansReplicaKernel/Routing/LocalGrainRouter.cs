@@ -19,6 +19,14 @@ public sealed class LocalGrainRouter : IGrainRouter
 
     public GrainAddress Route(InvocationMessage message)
     {
+        if (CallbackTargetIdentity.TryGetNodeName(message.Target.GrainId, out var callbackNodeName))
+        {
+            TraceLog.Write(
+                "routing",
+                $"{message.Target.GrainId} resolved to callback target on {callbackNodeName}");
+            return new GrainAddress(callbackNodeName, message.Target.GrainId, OwnerVersion: 0);
+        }
+
         var address = _locator.Locate(message.Target.GrainId);
         if (address.NodeName != _localNodeName)
         {

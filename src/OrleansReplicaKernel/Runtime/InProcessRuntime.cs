@@ -7,7 +7,7 @@ using OrleansReplicaKernel.Routing;
 
 namespace OrleansReplicaKernel.Runtime;
 
-public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IResponseReceiver, IAsyncDisposable
+public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver, IResponseReceiver, IAsyncDisposable
 {
     private const int MaxAttempts = 4;
 
@@ -18,9 +18,18 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
     private readonly IGrainRouter _router;
     private readonly IActivationDirectory _activationDirectory;
     private readonly IMessageTransport _transport;
-    private readonly Dictionary<Guid, InvocationResponseMessage> _completedRequests = new();
+    private readonly ObjectReferenceFactoryRegistry _objectReferences;
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _responseHistoryRetention;
+    private readonly Dictionary<Guid, CompletedRequestEntry> _completedRequests = new();
     private readonly Dictionary<Guid, Task<InvocationResponseMessage>> _inflightRequests = new();
-    private readonly Dictionary<Guid, TaskCompletionSource<InvocationResponseMessage>> _pendingResponses = new();
+    private readonly Dictionary<Guid, PendingResponseRegistration> _pendingResponses = new();
+    private readonly Dictionary<Guid, SourceRequestState> _sourceRequests = new();
+
+    private int _acceptedResponses;
+    private int _lateResponses;
+    private int _staleResponses;
+    private int _duplicateResponses;
 
     public InProcessRuntime(
         string nodeName,
@@ -28,7 +37,10 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
         IGrainLocator locator,
         IGrainRouter router,
         IActivationDirectory activationDirectory,
-        IMessageTransport transport)
+        IMessageTransport transport,
+        ObjectReferenceFactoryRegistry objectReferences,
+        TimeProvider? timeProvider = null,
+        TimeSpan? responseHistoryRetention = null)
     {
         NodeName = nodeName;
         _failureDetector = failureDetector;
@@ -36,9 +48,44 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
         _router = router;
         _activationDirectory = activationDirectory;
         _transport = transport;
+        _objectReferences = objectReferences;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _responseHistoryRetention = responseHistoryRetention ?? TimeSpan.FromMinutes(5);
     }
 
     public string NodeName { get; }
+
+    public ObjectReferenceFactoryRegistry ObjectReferences => _objectReferences;
+
+    public ResponseDispositionSnapshot GetResponseDispositionSnapshot()
+    {
+        var utcNow = _timeProvider.GetUtcNow();
+        var pendingResponses = 0;
+        var trackedSourceRequests = 0;
+        var completedTargetRequests = 0;
+
+        lock (_responseLock)
+        {
+            EvictExpiredSourceStateLocked(utcNow);
+            pendingResponses = _pendingResponses.Count;
+            trackedSourceRequests = _sourceRequests.Count;
+        }
+
+        lock (_requestLock)
+        {
+            EvictExpiredCompletedRequestsLocked(utcNow);
+            completedTargetRequests = _completedRequests.Count;
+        }
+
+        return new ResponseDispositionSnapshot(
+            AcceptedResponses: Volatile.Read(ref _acceptedResponses),
+            LateResponses: Volatile.Read(ref _lateResponses),
+            StaleResponses: Volatile.Read(ref _staleResponses),
+            DuplicateResponses: Volatile.Read(ref _duplicateResponses),
+            PendingResponses: pendingResponses,
+            TrackedSourceRequests: trackedSourceRequests,
+            CompletedTargetRequests: completedTargetRequests);
+    }
 
     public async ValueTask<TResult> InvokeAsync<TResult>(
         GrainId grainId,
@@ -50,8 +97,8 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
             var attemptId = Guid.NewGuid();
-            var routedMessage = CreateRoutedMessage(requestId, attemptId, grainId, invokable);
-            var completion = RegisterPendingResponse(attemptId);
+            var routedMessage = CreateRoutedMessage(requestId, attemptId, attempt, grainId, invokable);
+            var completion = RegisterPendingResponse(requestId, attemptId, attempt);
 
             try
             {
@@ -60,7 +107,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
                 var response = await completion.Task.WaitAsync(cancellationToken);
                 TraceLog.Write(
                     "response",
-                    $"complete {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}");
+                    $"complete {response.RequestId:N}/{response.AttemptId:N}/#{response.AttemptSequence} from {response.ResponderNodeName}");
 
                 if (response.Error is not null)
                 {
@@ -85,7 +132,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
 
                     TraceLog.Write(
                         "failure",
-                        $"response failure {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}: {response.Error.GetType().Name}");
+                        $"response failure {response.RequestId:N}/{response.AttemptId:N}/#{response.AttemptSequence} from {response.ResponderNodeName}: {response.Error.GetType().Name}");
                     if (routedMessage.Target.NodeName != NodeName)
                     {
                         _failureDetector.ReportSuccess(
@@ -107,7 +154,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
             }
             catch (OperationCanceledException)
             {
-                RemovePendingResponse(attemptId);
+                RemovePendingResponse(attemptId, requestId, attempt, stopWaiting: true);
                 if (routedMessage.Target.NodeName != NodeName)
                 {
                     _failureDetector.ReportFailure(
@@ -117,12 +164,12 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
 
                 TraceLog.Write(
                     "failure",
-                    $"request {requestId:N}/{attemptId:N} timed out or was canceled");
+                    $"request {requestId:N}/{attemptId:N}/#{attempt} timed out or was canceled");
                 throw;
             }
             catch (RemoteNodeUnavailableException exception) when (attempt < MaxAttempts)
             {
-                RemovePendingResponse(attemptId);
+                RemovePendingResponse(attemptId, requestId, attempt, stopWaiting: false);
                 _failureDetector.ReportFailure(exception.NodeName, "remote node unavailable");
                 TraceLog.Write(
                     "retry",
@@ -131,7 +178,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
             }
             catch (ResponseDeliveryException exception) when (attempt < MaxAttempts)
             {
-                RemovePendingResponse(attemptId);
+                RemovePendingResponse(attemptId, requestId, attempt, stopWaiting: false);
                 _failureDetector.ReportFailure(
                     exception.NodeName,
                     $"response delivery failed: {exception.Reason}");
@@ -142,7 +189,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
             }
             catch
             {
-                RemovePendingResponse(attemptId);
+                RemovePendingResponse(attemptId, requestId, attempt, stopWaiting: true);
                 throw;
             }
         }
@@ -156,7 +203,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
     {
         TraceLog.Write(
             "runtime",
-            $"receive request {message.RequestId:N}/{message.AttemptId:N} on {NodeName} from {message.SourceNodeName}");
+            $"receive request {message.RequestId:N}/{message.AttemptId:N}/#{message.AttemptSequence} on {NodeName} from {message.SourceNodeName}");
 
         Task<InvocationResponseMessage>? requestTask = null;
         InvocationResponseMessage? completedResponse = null;
@@ -164,12 +211,18 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
 
         lock (_requestLock)
         {
+            EvictExpiredCompletedRequestsLocked(_timeProvider.GetUtcNow());
+
             if (_completedRequests.TryGetValue(message.RequestId, out var completed))
             {
                 TraceLog.Write(
                     "dedupe",
                     $"replay cached response {message.RequestId:N} on {NodeName} for {message.Target.GrainId}");
-                completedResponse = completed with { AttemptId = message.AttemptId };
+                completedResponse = completed.Response with
+                {
+                    AttemptId = message.AttemptId,
+                    AttemptSequence = message.AttemptSequence
+                };
             }
             else if (_inflightRequests.TryGetValue(message.RequestId, out requestTask))
             {
@@ -198,7 +251,11 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
 
         var response = await requestTask;
         return joinedInflight
-            ? response with { AttemptId = message.AttemptId }
+            ? response with
+            {
+                AttemptId = message.AttemptId,
+                AttemptSequence = message.AttemptSequence
+            }
             : response;
     }
 
@@ -206,20 +263,55 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
         InvocationResponseMessage response,
         CancellationToken cancellationToken = default)
     {
-        TaskCompletionSource<InvocationResponseMessage>? pendingResponse;
+        PendingResponseRegistration? pendingRegistration;
+        string? discardCategory = null;
+        string? discardReason = null;
 
         lock (_responseLock)
         {
-            if (!_pendingResponses.Remove(response.AttemptId, out pendingResponse))
+            var utcNow = _timeProvider.GetUtcNow();
+            EvictExpiredSourceStateLocked(utcNow);
+
+            if (_pendingResponses.Remove(response.AttemptId, out pendingRegistration))
             {
-                TraceLog.Write(
-                    "response",
-                    $"discard late response {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}");
-                return ValueTask.CompletedTask;
+                var state = _sourceRequests[response.RequestId];
+                var pendingAttemptCount = Math.Max(0, state.PendingAttemptCount - 1);
+                if (response.AttemptSequence < state.LatestAttemptSequence)
+                {
+                    discardCategory = "stale";
+                    discardReason = $"attempt #{response.AttemptSequence} lost to newer attempt #{state.LatestAttemptSequence}";
+                    _sourceRequests[response.RequestId] = state with
+                    {
+                        PendingAttemptCount = pendingAttemptCount,
+                        UpdatedUtc = utcNow
+                    };
+                }
+                else
+                {
+                    _sourceRequests[response.RequestId] = state with
+                    {
+                        CompletedAttemptSequence = response.AttemptSequence,
+                        PendingAttemptCount = pendingAttemptCount,
+                        WaitingStopped = false
+                        ,
+                        UpdatedUtc = utcNow
+                    };
+                }
+            }
+            else
+            {
+                ClassifyUnexpectedResponse(response, out discardCategory, out discardReason);
             }
         }
 
-        pendingResponse.TrySetResult(response);
+        if (discardCategory is not null || pendingRegistration is null)
+        {
+            RecordDiscardedResponse(discardCategory ?? "late", response, discardReason ?? "no pending completion");
+            return ValueTask.CompletedTask;
+        }
+
+        Interlocked.Increment(ref _acceptedResponses);
+        pendingRegistration.Completion.TrySetResult(response);
         return ValueTask.CompletedTask;
     }
 
@@ -228,12 +320,14 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
     private InvocationMessage CreateRoutedMessage(
         Guid requestId,
         Guid attemptId,
+        int attemptSequence,
         GrainId grainId,
         IInvokable invokable)
     {
         var message = new InvocationMessage(
             requestId,
             attemptId,
+            attemptSequence,
             NodeName,
             new GrainAddress(NodeName, grainId, OwnerVersion: 0),
             invokable);
@@ -243,7 +337,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
         TraceLog.Write("proxy", $"pack {invokable.InterfaceName}.{invokable.MethodName} -> {grainId}");
         TraceLog.Write(
             "message",
-            $"create {routedMessage.RequestId:N}/{routedMessage.AttemptId:N} {routedMessage.SourceNodeName} -> {routedMessage.Target}");
+            $"create {routedMessage.RequestId:N}/{routedMessage.AttemptId:N}/#{routedMessage.AttemptSequence} {routedMessage.SourceNodeName} -> {routedMessage.Target}");
         return routedMessage;
     }
 
@@ -262,7 +356,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
         }
         catch (Exception exception)
         {
-            FailPendingResponse(message.AttemptId, exception);
+            FailPendingResponse(message.AttemptId, message.RequestId, message.AttemptSequence, exception);
         }
     }
 
@@ -281,6 +375,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
             response = new InvocationResponseMessage(
                 message.RequestId,
                 message.AttemptId,
+                message.AttemptSequence,
                 NodeName,
                 null,
                 exception);
@@ -289,7 +384,9 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
         lock (_requestLock)
         {
             _inflightRequests.Remove(message.RequestId);
-            _completedRequests[message.RequestId] = response;
+            _completedRequests[message.RequestId] = new CompletedRequestEntry(
+                response,
+                _timeProvider.GetUtcNow());
         }
 
         return response;
@@ -302,10 +399,11 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
         try
         {
             var activation = _activationDirectory.GetOrCreate(message.Target);
-            var result = await activation.InvokeAsync(message, cancellationToken);
+            var result = await activation.InvokeAsync(message, this, cancellationToken);
             return new InvocationResponseMessage(
                 message.RequestId,
                 message.AttemptId,
+                message.AttemptSequence,
                 NodeName,
                 result,
                 null);
@@ -315,45 +413,255 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IRe
             return new InvocationResponseMessage(
                 message.RequestId,
                 message.AttemptId,
+                message.AttemptSequence,
                 NodeName,
                 null,
                 exception);
         }
     }
 
-    private TaskCompletionSource<InvocationResponseMessage> RegisterPendingResponse(Guid attemptId)
+    private TaskCompletionSource<InvocationResponseMessage> RegisterPendingResponse(
+        Guid requestId,
+        Guid attemptId,
+        int attemptSequence)
     {
         var completion = new TaskCompletionSource<InvocationResponseMessage>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         lock (_responseLock)
         {
-            _pendingResponses.Add(attemptId, completion);
+            var utcNow = _timeProvider.GetUtcNow();
+            EvictExpiredSourceStateLocked(utcNow);
+
+            _sourceRequests[requestId] = _sourceRequests.TryGetValue(requestId, out var state)
+                ? state with
+                {
+                    LatestAttemptSequence = Math.Max(state.LatestAttemptSequence, attemptSequence),
+                    PendingAttemptCount = state.PendingAttemptCount + 1,
+                    WaitingStopped = false,
+                    UpdatedUtc = utcNow
+                }
+                : new SourceRequestState(
+                    LatestAttemptSequence: attemptSequence,
+                    CompletedAttemptSequence: null,
+                    PendingAttemptCount: 1,
+                    WaitingStopped: false,
+                    UpdatedUtc: utcNow);
+            _pendingResponses.Add(
+                attemptId,
+                new PendingResponseRegistration(requestId, attemptSequence, completion));
         }
 
         return completion;
     }
 
-    private void RemovePendingResponse(Guid attemptId)
+    private void RemovePendingResponse(
+        Guid attemptId,
+        Guid requestId,
+        int attemptSequence,
+        bool stopWaiting)
     {
         lock (_responseLock)
         {
             _pendingResponses.Remove(attemptId);
-        }
-    }
+            var utcNow = _timeProvider.GetUtcNow();
+            EvictExpiredSourceStateLocked(utcNow);
 
-    private void FailPendingResponse(Guid attemptId, Exception exception)
-    {
-        TaskCompletionSource<InvocationResponseMessage>? completion;
-
-        lock (_responseLock)
-        {
-            if (!_pendingResponses.Remove(attemptId, out completion))
+            if (!_sourceRequests.TryGetValue(requestId, out var state))
             {
                 return;
             }
+
+            var pendingAttemptCount = Math.Max(0, state.PendingAttemptCount - 1);
+            if (attemptSequence < state.LatestAttemptSequence)
+            {
+                _sourceRequests[requestId] = state with
+                {
+                    PendingAttemptCount = pendingAttemptCount,
+                    UpdatedUtc = utcNow
+                };
+                return;
+            }
+
+            _sourceRequests[requestId] = state with
+            {
+                PendingAttemptCount = pendingAttemptCount,
+                WaitingStopped = stopWaiting,
+                UpdatedUtc = utcNow
+            };
+        }
+    }
+
+    private void FailPendingResponse(
+        Guid attemptId,
+        Guid requestId,
+        int attemptSequence,
+        Exception exception)
+    {
+        PendingResponseRegistration? pendingRegistration;
+
+        lock (_responseLock)
+        {
+            if (!_pendingResponses.Remove(attemptId, out pendingRegistration))
+            {
+                return;
+            }
+
+            var utcNow = _timeProvider.GetUtcNow();
+            EvictExpiredSourceStateLocked(utcNow);
+
+            if (_sourceRequests.TryGetValue(requestId, out var state)
+                && attemptSequence >= state.LatestAttemptSequence)
+            {
+                _sourceRequests[requestId] = state with
+                {
+                    PendingAttemptCount = Math.Max(0, state.PendingAttemptCount - 1),
+                    WaitingStopped = true,
+                    UpdatedUtc = utcNow
+                };
+            }
+            else if (_sourceRequests.TryGetValue(requestId, out var staleState))
+            {
+                _sourceRequests[requestId] = staleState with
+                {
+                    PendingAttemptCount = Math.Max(0, staleState.PendingAttemptCount - 1),
+                    UpdatedUtc = utcNow
+                };
+            }
         }
 
-        completion.TrySetException(exception);
+        pendingRegistration.Completion.TrySetException(exception);
     }
+
+    private void ClassifyUnexpectedResponse(
+        InvocationResponseMessage response,
+        out string category,
+        out string reason)
+    {
+        if (!_sourceRequests.TryGetValue(response.RequestId, out var state))
+        {
+            category = "late";
+            reason = "request is no longer tracked on the source node";
+            return;
+        }
+
+        if (state.CompletedAttemptSequence is { } completedAttemptSequence)
+        {
+            if (response.AttemptSequence < completedAttemptSequence)
+            {
+                category = "stale";
+                reason = $"completed by newer attempt #{completedAttemptSequence}";
+                return;
+            }
+
+            if (response.AttemptSequence == completedAttemptSequence)
+            {
+                category = "duplicate";
+                reason = $"attempt #{response.AttemptSequence} already completed";
+                return;
+            }
+
+            category = "stale";
+            reason = $"request already completed at attempt #{completedAttemptSequence}";
+            return;
+        }
+
+        if (response.AttemptSequence < state.LatestAttemptSequence)
+        {
+            category = "stale";
+            reason = $"source has already advanced to attempt #{state.LatestAttemptSequence}";
+            return;
+        }
+
+        category = "late";
+        reason = state.WaitingStopped
+            ? "caller has already stopped waiting for this attempt"
+            : "no pending completion exists for this attempt";
+    }
+
+    private void RecordDiscardedResponse(
+        string category,
+        InvocationResponseMessage response,
+        string reason)
+    {
+        switch (category)
+        {
+            case "duplicate":
+                Interlocked.Increment(ref _duplicateResponses);
+                break;
+            case "stale":
+                Interlocked.Increment(ref _staleResponses);
+                break;
+            default:
+                category = "late";
+                Interlocked.Increment(ref _lateResponses);
+                break;
+        }
+
+        TraceLog.Write(
+            "response",
+            $"discard {category} response {response.RequestId:N}/{response.AttemptId:N}/#{response.AttemptSequence} from {response.ResponderNodeName}: {reason}");
+    }
+
+    private void EvictExpiredCompletedRequestsLocked(DateTimeOffset utcNow)
+    {
+        if (_responseHistoryRetention == TimeSpan.Zero)
+        {
+            _completedRequests.Clear();
+            return;
+        }
+
+        var cutoff = utcNow - _responseHistoryRetention;
+        foreach (var requestId in _completedRequests
+                     .Where(item => item.Value.CompletedUtc <= cutoff)
+                     .Select(item => item.Key)
+                     .ToArray())
+        {
+            _completedRequests.Remove(requestId);
+        }
+    }
+
+    private void EvictExpiredSourceStateLocked(DateTimeOffset utcNow)
+    {
+        if (_responseHistoryRetention == TimeSpan.Zero)
+        {
+            foreach (var requestId in _sourceRequests
+                         .Where(item => item.Value.PendingAttemptCount == 0)
+                         .Select(item => item.Key)
+                         .ToArray())
+            {
+                _sourceRequests.Remove(requestId);
+            }
+
+            return;
+        }
+
+        var cutoff = utcNow - _responseHistoryRetention;
+        foreach (var requestId in _sourceRequests
+                     .Where(item =>
+                         item.Value.PendingAttemptCount == 0
+                         && item.Value.UpdatedUtc <= cutoff
+                         && (item.Value.CompletedAttemptSequence is not null || item.Value.WaitingStopped))
+                     .Select(item => item.Key)
+                     .ToArray())
+        {
+            _sourceRequests.Remove(requestId);
+        }
+    }
+
+    private sealed record PendingResponseRegistration(
+        Guid RequestId,
+        int AttemptSequence,
+        TaskCompletionSource<InvocationResponseMessage> Completion);
+
+    private sealed record CompletedRequestEntry(
+        InvocationResponseMessage Response,
+        DateTimeOffset CompletedUtc);
+
+    private sealed record SourceRequestState(
+        int LatestAttemptSequence,
+        int? CompletedAttemptSequence,
+        int PendingAttemptCount,
+        bool WaitingStopped,
+        DateTimeOffset UpdatedUtc);
 }
