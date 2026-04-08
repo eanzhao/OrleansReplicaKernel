@@ -25,7 +25,7 @@ public sealed class InProcessMessageTransport : IMessageTransport
             throw new RemoteNodeUnavailableException(message.Target.NodeName);
         }
 
-        var dispatch = _nodeRegistry.PrepareDispatch(message.Target.NodeName);
+        var dispatch = _nodeRegistry.PrepareDispatch(message.SourceNodeName, message.Target.NodeName);
 
         if (dispatch.Delay is { } delay && delay > TimeSpan.Zero)
         {

@@ -58,27 +58,32 @@ public sealed class InProcessNodeRegistry
         throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
     }
 
-    public DispatchPlan PrepareDispatch(string nodeName)
+    public DispatchPlan PrepareDispatch(string sourceNodeName, string targetNodeName)
     {
         lock (_lock)
         {
-            if (!_nodes.TryGetValue(nodeName, out var node))
+            if (!_nodes.TryGetValue(targetNodeName, out var targetNode))
             {
-                throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
+                throw new InvalidOperationException($"No in-process node registered for '{targetNodeName}'.");
             }
 
-            var delay = node.NextDelay;
-            node.NextDelay = null;
+            if (!_nodes.TryGetValue(sourceNodeName, out var sourceNode))
+            {
+                throw new InvalidOperationException($"No in-process node registered for '{sourceNodeName}'.");
+            }
 
-            var nextResponseError = node.NextResponseError;
-            node.NextResponseError = null;
+            var delay = targetNode.NextDelay;
+            targetNode.NextDelay = null;
 
-            var nextDroppedResponseReason = node.NextDroppedResponseReason;
-            node.NextDroppedResponseReason = null;
+            var nextResponseError = targetNode.NextResponseError;
+            targetNode.NextResponseError = null;
+
+            var nextDroppedResponseReason = targetNode.NextDroppedResponseReason;
+            targetNode.NextDroppedResponseReason = null;
 
             return new DispatchPlan(
-                node.RequestReceiver,
-                node.ResponseReceiver,
+                targetNode.RequestReceiver,
+                sourceNode.ResponseReceiver,
                 delay,
                 nextResponseError,
                 nextDroppedResponseReason);

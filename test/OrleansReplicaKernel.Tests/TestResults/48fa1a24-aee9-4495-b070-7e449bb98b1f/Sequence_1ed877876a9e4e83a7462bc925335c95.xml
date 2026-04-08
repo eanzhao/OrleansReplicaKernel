@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<TestSequence>
+  <Test Name="OrleansReplicaKernel.Tests.Runtime.InvocationResponseSemanticsTests.DroppedResponse_RetriesSameRequestId_WithoutReexecutingGrainMethod" DisplayName="OrleansReplicaKernel.Tests.Runtime.InvocationResponseSemanticsTests.DroppedResponse_RetriesSameRequestId_WithoutReexecutingGrainMethod" Source="/Users/zhaoyiqi/Code/orleans/OrleansReplicaKernel/test/OrleansReplicaKernel.Tests/bin/Debug/net10.0/OrleansReplicaKernel.Tests.dll" Completed="False" />
+</TestSequence>
