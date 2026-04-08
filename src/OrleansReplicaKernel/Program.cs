@@ -1,0 +1,269 @@
+using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.Demo;
+using OrleansReplicaKernel.Runtime;
+
+var stabilizationWindow = TimeSpan.FromMilliseconds(200);
+var gossipFanout = 1;
+var antiEntropyInterval = 4;
+
+OrleansReplicaKernelHost host = CreateHost();
+try
+{
+    TraceLog.Write("app", "build host complete");
+    TraceLog.Write("app", $"gossip settings fanout={gossipFanout} anti-entropy-every={antiEntropyInterval}");
+    LogMembershipViews("membership-initial");
+
+    var echo = host.GetGrain<IEchoGrain>("alpha");
+    var counter = host.GetGrain<ICounterGrain>("beta");
+
+    var firstEcho = await echo.PingAsync("hello");
+
+    Console.WriteLine();
+
+    var secondEcho = await echo.PingAsync("again");
+
+    Console.WriteLine();
+    TraceLog.Write("app", "move echo owner to remote node dev-node-2");
+    await host.SetOwnerAsync<IEchoGrain>("alpha", "dev-node-2");
+
+    var remoteEcho = await echo.PingAsync("remote-owner");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-remote = {remoteEcho}");
+
+    var fenceEcho = host.GetGrain<IEchoGrain>("fence");
+    var fenceSeed = await fenceEcho.PingAsync("fence-seed");
+
+    Console.WriteLine();
+    TraceLog.Write("app", "move fence owner to remote node dev-node-2");
+    await host.SetOwnerAsync<IEchoGrain>("fence", "dev-node-2");
+    var fenceRemote = await fenceEcho.PingAsync("fence-remote-owner");
+
+    Console.WriteLine();
+    TraceLog.Write("app", "delay a request to dev-node-2, then move owner to dev-node-3 and force stale-message rejection + retry");
+    host.DelayNextRequest("dev-node-2", TimeSpan.FromMilliseconds(150));
+    var staleRetryTask = fenceEcho.PingAsync("after-stale-retry");
+    await Task.Delay(TimeSpan.FromMilliseconds(30));
+    await host.SetOwnerAsync<IEchoGrain>("fence", "dev-node-3");
+    var fenceAfterStaleRetry = await staleRetryTask;
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-fence-seed = {fenceSeed}");
+    TraceLog.Write("result", $"echo-fence-remote = {fenceRemote}");
+    TraceLog.Write("result", $"echo-fence-after-stale-retry = {fenceAfterStaleRetry}");
+
+    host.FailNextProbe("dev-node-2", "heartbeat miss #1");
+    await host.RunProbeTickAsync();
+    LogDeliveries("fanout-1", host.RunGossipTick());
+
+    Console.WriteLine();
+    LogMembershipViews("membership-after-fanout-1");
+
+    host.FailNextProbe("dev-node-2", "heartbeat miss #2");
+    await host.RunProbeTickAsync();
+    LogDeliveries("fanout-2", host.RunGossipTick());
+
+    Console.WriteLine();
+    LogMembershipViews("membership-after-fanout-2");
+
+    TraceLog.Write("app", $"wait for stabilization window {stabilizationWindow}");
+    await Task.Delay(stabilizationWindow + TimeSpan.FromMilliseconds(50));
+    LogDeliveries("anti-entropy", host.RunGossipTick());
+
+    Console.WriteLine();
+    LogMembershipViews("membership-after-anti-entropy");
+    LogDirectoryState("directory-before-runtime-checkpoint");
+
+    var counterBeforeCheckpointFirst = await counter.AddAsync(3);
+
+    Console.WriteLine();
+
+    var counterBeforeCheckpointSecond = await counter.AddAsync(2);
+
+    Console.WriteLine();
+    LogActivationMetadata("activation-metadata-before-runtime-checkpoint");
+
+    var checkpoint = host.CaptureRuntimeCheckpoint();
+    TraceLog.Write(
+        "result",
+        $"runtime-checkpoint epoch={checkpoint.Membership.ClusterMembership.CurrentEpoch} directory-records={checkpoint.GrainDirectory.Records.Count} activation-directories={checkpoint.ActivationDirectories.Count} gossip-tick={checkpoint.Membership.Dissemination.TickNumber}");
+
+    Console.WriteLine();
+    TraceLog.Write("app", "dispose host and rebuild from runtime checkpoint");
+    await host.DisposeAsync();
+    host = CreateHost(checkpoint);
+
+    TraceLog.Write("app", "restart host complete from runtime checkpoint");
+    LogMembershipViews("membership-after-restart");
+    LogDirectoryState("directory-after-restart");
+    LogActivationMetadata("activation-metadata-after-restart");
+    LogDeliveries("restart-gossip", host.RunGossipTick());
+
+    var echoAfterRestart = host.GetGrain<IEchoGrain>("alpha");
+    TraceLog.Write("app", "call echo after restart to prove recovered directory record can relocate without rebuilding from empty state");
+    var recoveredEcho = await echoAfterRestart.PingAsync("after-runtime-checkpoint");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-after-runtime-checkpoint = {recoveredEcho}");
+    LogDirectoryState("directory-after-restart-relocation");
+
+    var recoveredCounter = host.GetGrain<ICounterGrain>("beta");
+    var counterAfterRestart = await recoveredCounter.AddAsync(4);
+
+    Console.WriteLine();
+    LogActivationMetadata("activation-metadata-after-counter-rehydrate");
+    LogPlacementLoad("placement-load-before-new-placement");
+
+    var freshEcho = host.GetGrain<IEchoGrain>("fresh-placement");
+    var freshEchoResult = await freshEcho.PingAsync("initial-placement");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-fresh-initial-placement = {freshEchoResult}");
+    LogDirectoryState("directory-after-initial-placement");
+    LogPlacementLoad("placement-load-after-initial-placement");
+
+    TraceLog.Write("app", "rebalance echo/alpha and carry warm handoff state into the new activation");
+    var handoffPerformed = await host.RebalanceGrainAsync<IEchoGrain>("alpha");
+    var alphaAfterHandoff = await echoAfterRestart.PingAsync("after-handoff");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"handoff-alpha = {handoffPerformed}");
+    TraceLog.Write("result", $"echo-alpha-after-handoff = {alphaAfterHandoff}");
+    LogDirectoryState("directory-after-handoff");
+    LogPlacementLoad("placement-load-after-handoff");
+
+    var fallbackEcho = host.GetGrain<IEchoGrain>("fallback");
+    var fallbackSeed = await fallbackEcho.PingAsync("fallback-seed");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-fallback-seed = {fallbackSeed}");
+    TraceLog.Write("app", "inject warm handoff apply failure for echo/fallback and fall back to cold activation");
+    EchoGrain.FailNextWarmHandoffApply("simulated warm handoff apply failure");
+    await host.SetOwnerAsync<IEchoGrain>("fallback", "dev-node-3");
+    var fallbackAfterApplyFailure = await fallbackEcho.PingAsync("after-failed-apply");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-fallback-after-failed-apply = {fallbackAfterApplyFailure}");
+
+    TraceLog.Write("app", "inject warm handoff capture failure for echo/fallback and fall back to cold handoff");
+    EchoGrain.FailNextWarmHandoffCapture("simulated warm handoff capture failure");
+    await host.SetOwnerAsync<IEchoGrain>("fallback", "dev-node-1");
+    var fallbackAfterCaptureFailure = await fallbackEcho.PingAsync("after-failed-capture");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-fallback-after-failed-capture = {fallbackAfterCaptureFailure}");
+
+    var drainEcho = host.GetGrain<IEchoGrain>("drain");
+    TraceLog.Write("app", "start a slow echo turn, then move owner while the old activation is still busy");
+    var inFlightDrainTurn = drainEcho.PingSlowAsync("drain-turn", 150);
+    await Task.Delay(TimeSpan.FromMilliseconds(30));
+    var drainMove = host.SetOwnerAsync<IEchoGrain>("drain", "dev-node-3").AsTask();
+    await Task.WhenAll(inFlightDrainTurn, drainMove);
+    var drainAfterHandoff = await drainEcho.PingAsync("after-drain-handoff");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-drain-in-flight = {inFlightDrainTurn.Result}");
+    TraceLog.Write("result", $"echo-drain-after-handoff = {drainAfterHandoff}");
+
+    TraceLog.Write("app", "wait for counter to become idle");
+    await Task.Delay(TimeSpan.FromMilliseconds(150));
+
+    var collectedIdle = await host.CollectIdleGrainsAsync(TimeSpan.FromMilliseconds(100));
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"idle-collected = {collectedIdle}");
+
+    Console.WriteLine();
+    LogActivationMetadata("activation-metadata-after-idle-collect");
+
+    var counterAfterIdleCollect = await recoveredCounter.AddAsync(2);
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-first = {firstEcho}");
+    TraceLog.Write("result", $"echo-second = {secondEcho}");
+    TraceLog.Write("result", $"echo-remote = {remoteEcho}");
+    TraceLog.Write("result", $"echo-fence-seed = {fenceSeed}");
+    TraceLog.Write("result", $"echo-fence-remote = {fenceRemote}");
+    TraceLog.Write("result", $"echo-fence-after-stale-retry = {fenceAfterStaleRetry}");
+    TraceLog.Write("result", $"counter-before-runtime-checkpoint-first = {counterBeforeCheckpointFirst}");
+    TraceLog.Write("result", $"counter-before-runtime-checkpoint-second = {counterBeforeCheckpointSecond}");
+    TraceLog.Write("result", $"echo-after-runtime-checkpoint = {recoveredEcho}");
+    TraceLog.Write("result", $"counter-after-runtime-checkpoint = {counterAfterRestart}");
+    TraceLog.Write("result", $"echo-fresh-initial-placement = {freshEchoResult}");
+    TraceLog.Write("result", $"handoff-alpha = {handoffPerformed}");
+    TraceLog.Write("result", $"echo-alpha-after-handoff = {alphaAfterHandoff}");
+    TraceLog.Write("result", $"echo-fallback-seed = {fallbackSeed}");
+    TraceLog.Write("result", $"echo-fallback-after-failed-apply = {fallbackAfterApplyFailure}");
+    TraceLog.Write("result", $"echo-fallback-after-failed-capture = {fallbackAfterCaptureFailure}");
+    TraceLog.Write("result", $"echo-drain-in-flight = {inFlightDrainTurn.Result}");
+    TraceLog.Write("result", $"echo-drain-after-handoff = {drainAfterHandoff}");
+    TraceLog.Write("result", $"counter-after-idle-collect = {counterAfterIdleCollect}");
+}
+finally
+{
+    await host.DisposeAsync();
+}
+
+OrleansReplicaKernelHost CreateHost(OrleansReplicaKernelRuntimeCheckpoint? checkpoint = null)
+{
+    var builder = new OrleansReplicaKernelBuilder()
+        .WithMembershipStabilizationWindow(stabilizationWindow)
+        .WithMembershipGossipFanout(gossipFanout)
+        .WithMembershipAntiEntropyInterval(antiEntropyInterval)
+        .AddGrain<IEchoGrain, EchoGrain>(
+            grainType: "echo",
+            grainFactory: static () => new EchoGrain(),
+            referenceFactory: static (runtime, grainId) => new EchoGrainReference(runtime, grainId))
+        .AddGrain<ICounterGrain, CounterGrain>(
+            grainType: "counter",
+            grainFactory: static () => new CounterGrain(),
+            referenceFactory: static (runtime, grainId) => new CounterGrainReference(runtime, grainId));
+
+    if (checkpoint is not null)
+    {
+        builder.WithRuntimeCheckpoint(checkpoint);
+    }
+
+    return builder.Build("dev-node-1", "dev-node-2", "dev-node-3");
+}
+
+void LogMembershipViews(string label)
+{
+    foreach (var observerNodeName in new[] { "dev-node-1", "dev-node-2", "dev-node-3" })
+    {
+        TraceLog.Write("result", $"{label}[{observerNodeName}] = {host.DescribeMembershipView(observerNodeName)}");
+    }
+}
+
+void LogDeliveries(string label, IReadOnlyList<MembershipGossipDelivery> deliveries)
+{
+    if (deliveries.Count == 0)
+    {
+        TraceLog.Write("result", $"{label}-deliveries = <none>");
+        return;
+    }
+
+    var rendered = string.Join(
+        "; ",
+        deliveries.Select(
+            item => $"{item.ObserverNodeName}:{item.Mode}[{item.FromExclusiveEpoch}->{item.ToInclusiveEpoch}] tick={item.TickNumber} changes={item.ConsumedChanges} stabilized={item.StabilizedNodes}"));
+    TraceLog.Write("result", $"{label}-deliveries = {rendered}");
+}
+
+void LogDirectoryState(string label)
+{
+    TraceLog.Write("result", $"{label} = {host.DescribeGrainDirectory()}");
+}
+
+void LogActivationMetadata(string label)
+{
+    foreach (var nodeName in new[] { "dev-node-1", "dev-node-2", "dev-node-3" })
+    {
+        TraceLog.Write("result", $"{label}[{nodeName}] = {host.DescribeActivationMetadata(nodeName)}");
+    }
+}
+
+void LogPlacementLoad(string label)
+{
+    TraceLog.Write("result", $"{label} = {host.DescribePlacementLoad()}");
+}

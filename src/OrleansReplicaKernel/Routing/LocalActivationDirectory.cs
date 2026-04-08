@@ -1,0 +1,357 @@
+using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.Identity;
+using OrleansReplicaKernel.Runtime;
+
+namespace OrleansReplicaKernel.Routing;
+
+public sealed class LocalActivationDirectory : IActivationDirectory
+{
+    private sealed record PendingHandoffState(
+        long OwnerVersion,
+        ActivationHandoffRecord Record);
+
+    private readonly object _lock = new();
+    private readonly IReadOnlyDictionary<string, Func<object>> _grainFactories;
+    private readonly Dictionary<GrainId, ActivationEntry> _activations = new();
+    private readonly Dictionary<GrainId, PendingHandoffState> _pendingHandoffStates = new();
+    private readonly Dictionary<GrainId, ActivationMetadataRecord> _recoveredMetadata = new();
+    private readonly Dictionary<GrainId, long> _fencedOwnerVersions = new();
+
+    public LocalActivationDirectory(IReadOnlyDictionary<string, Func<object>> grainFactories)
+        : this(grainFactories, checkpoint: null)
+    {
+    }
+
+    private LocalActivationDirectory(
+        IReadOnlyDictionary<string, Func<object>> grainFactories,
+        ActivationDirectoryCheckpoint? checkpoint)
+    {
+        _grainFactories = grainFactories;
+
+        if (checkpoint is null)
+        {
+            return;
+        }
+
+        foreach (var record in checkpoint.Records.OrderBy(item => item.GrainId.ToString(), StringComparer.Ordinal))
+        {
+            _recoveredMetadata[record.GrainId] = record;
+            _fencedOwnerVersions[record.GrainId] = record.OwnerVersion;
+        }
+    }
+
+    public ActivationEntry GetOrCreate(GrainAddress address)
+    {
+        lock (_lock)
+        {
+            if (TryRejectStaleRequest(address))
+            {
+                throw new StaleGrainAddressException(
+                    address.GrainId,
+                    address.NodeName,
+                    address.OwnerVersion,
+                    _fencedOwnerVersions[address.GrainId]);
+            }
+
+            if (_activations.TryGetValue(address.GrainId, out var existing))
+            {
+                if (existing.OwnerVersion != address.OwnerVersion)
+                {
+                    TraceLog.Write(
+                        "fencing",
+                        $"reject owner-version mismatch for active {address.GrainId} on {address.NodeName}: request v{address.OwnerVersion}, activation v{existing.OwnerVersion}");
+                    throw new StaleGrainAddressException(
+                        address.GrainId,
+                        address.NodeName,
+                        address.OwnerVersion,
+                        existing.OwnerVersion);
+                }
+
+                TraceLog.Write("directory", $"reuse activation {address.GrainId}");
+                return existing;
+            }
+
+            if (!_grainFactories.TryGetValue(address.GrainId.GrainType, out var grainFactory))
+            {
+                throw new InvalidOperationException(
+                    $"No activator registered for grain type '{address.GrainId.GrainType}'.");
+            }
+
+            if (_recoveredMetadata.Remove(address.GrainId, out var recovered))
+            {
+                if (recovered.OwnerVersion > address.OwnerVersion)
+                {
+                    _recoveredMetadata[address.GrainId] = recovered;
+                    TraceLog.Write(
+                        "fencing",
+                        $"reject stale recovered metadata request {address.GrainId} on {address.NodeName}: request v{address.OwnerVersion}, recovered v{recovered.OwnerVersion}");
+                    throw new StaleGrainAddressException(
+                        address.GrainId,
+                        address.NodeName,
+                        address.OwnerVersion,
+                        recovered.OwnerVersion);
+                }
+
+                TraceLog.Write(
+                    "directory",
+                    $"recover activation metadata {address.GrainId} on {address.NodeName} last-touched={recovered.LastTouchedUtc:O} owner-v{recovered.OwnerVersion}, create fresh instance");
+            }
+
+            var created = new ActivationEntry(address.GrainId, grainFactory(), address.OwnerVersion);
+            _fencedOwnerVersions[address.GrainId] = address.OwnerVersion;
+
+            if (_pendingHandoffStates.TryGetValue(address.GrainId, out var pendingHandoff))
+            {
+                if (pendingHandoff.OwnerVersion == address.OwnerVersion)
+                {
+                    _pendingHandoffStates.Remove(address.GrainId);
+                    TraceLog.Write(
+                        "handoff-state",
+                        $"apply staged warm handoff state {address.GrainId} on {address.NodeName} v{address.OwnerVersion}");
+                    try
+                    {
+                        created.ApplyHandoffState(pendingHandoff.Record);
+                    }
+                    catch (Exception exception)
+                    {
+                        TraceLog.Write(
+                            "handoff-state",
+                            $"apply failed for {address.GrainId} on {address.NodeName}: {exception.Message}; fallback to cold activation");
+                    }
+                }
+                else if (pendingHandoff.OwnerVersion < address.OwnerVersion)
+                {
+                    _pendingHandoffStates.Remove(address.GrainId);
+                    TraceLog.Write(
+                        "handoff-state",
+                        $"drop stale staged handoff state {address.GrainId} on {address.NodeName}: staged v{pendingHandoff.OwnerVersion}, request v{address.OwnerVersion}");
+                }
+                else
+                {
+                    TraceLog.Write(
+                        "fencing",
+                        $"reject request behind staged handoff state {address.GrainId} on {address.NodeName}: request v{address.OwnerVersion}, staged v{pendingHandoff.OwnerVersion}");
+                    throw new StaleGrainAddressException(
+                        address.GrainId,
+                        address.NodeName,
+                        address.OwnerVersion,
+                        pendingHandoff.OwnerVersion);
+                }
+            }
+
+            _activations.Add(address.GrainId, created);
+            TraceLog.Write("directory", $"register activation {address.GrainId} on {address.NodeName}");
+            return created;
+        }
+    }
+
+    public async ValueTask<ActivationHandoffRecord?> PrepareHandoffAsync(GrainAddress address)
+    {
+        ActivationEntry? activation;
+        lock (_lock)
+        {
+            if (!_activations.TryGetValue(address.GrainId, out activation))
+            {
+                TraceLog.Write("handoff-state", $"no active activation to capture for {address.GrainId} on {address.NodeName}");
+                return null;
+            }
+        }
+
+        await activation.QuiesceAsync();
+
+        lock (_lock)
+        {
+            var handoffState = activation.CaptureHandoffState();
+            if (handoffState is null)
+            {
+                TraceLog.Write("handoff-state", $"{address.GrainId} on {address.NodeName} has no warm handoff participant");
+                return null;
+            }
+
+            TraceLog.Write(
+                "handoff-state",
+                $"capture staged warm handoff state {address.GrainId} from {address.NodeName}");
+            return handoffState;
+        }
+    }
+
+    public void StageHandoffState(GrainAddress address, ActivationHandoffRecord handoffState)
+    {
+        lock (_lock)
+        {
+            _fencedOwnerVersions[address.GrainId] = Math.Max(
+                GetFencedOwnerVersion(address.GrainId),
+                address.OwnerVersion);
+
+            if (_activations.TryGetValue(address.GrainId, out var existing))
+            {
+                if (existing.OwnerVersion != address.OwnerVersion)
+                {
+                    TraceLog.Write(
+                        "handoff-state",
+                        $"ignore staged handoff state for active {address.GrainId} on {address.NodeName}: active v{existing.OwnerVersion}, staged v{address.OwnerVersion}");
+                    return;
+                }
+
+                TraceLog.Write(
+                    "handoff-state",
+                    $"apply warm handoff state immediately to active {address.GrainId} on {address.NodeName}");
+                try
+                {
+                    existing.ApplyHandoffState(handoffState);
+                }
+                catch (Exception exception)
+                {
+                    TraceLog.Write(
+                        "handoff-state",
+                        $"apply-to-active failed for {address.GrainId} on {address.NodeName}: {exception.Message}; keep existing activation state");
+                }
+
+                return;
+            }
+
+            _pendingHandoffStates[address.GrainId] = new PendingHandoffState(address.OwnerVersion, handoffState);
+            TraceLog.Write(
+                "handoff-state",
+                $"stage warm handoff state {address.GrainId} for {address.NodeName} v{address.OwnerVersion}");
+        }
+    }
+
+    public void Fence(GrainAddress address)
+    {
+        lock (_lock)
+        {
+            var previousFence = GetFencedOwnerVersion(address.GrainId);
+            if (address.OwnerVersion <= previousFence)
+            {
+                return;
+            }
+
+            _fencedOwnerVersions[address.GrainId] = address.OwnerVersion;
+
+            if (_pendingHandoffStates.TryGetValue(address.GrainId, out var pending)
+                && pending.OwnerVersion < address.OwnerVersion)
+            {
+                _pendingHandoffStates.Remove(address.GrainId);
+            }
+
+            TraceLog.Write(
+                "fencing",
+                $"fence {address.GrainId} on {address.NodeName} at v{address.OwnerVersion}");
+        }
+    }
+
+    public async ValueTask<bool> DeactivateAsync(GrainAddress address)
+    {
+        ActivationEntry? activation;
+        lock (_lock)
+        {
+            if (!_activations.Remove(address.GrainId, out activation))
+            {
+                TraceLog.Write("directory", $"no activation to deactivate for {address.GrainId}");
+                return false;
+            }
+
+            TraceLog.Write("directory", $"unregister activation {address.GrainId} from {address.NodeName}");
+        }
+
+        await activation.DisposeAsync();
+        return true;
+    }
+
+    public async ValueTask<int> CollectIdleAsync(TimeSpan idleFor)
+    {
+        if (idleFor < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(idleFor), "Idle window must be non-negative.");
+        }
+
+        var utcNow = DateTimeOffset.UtcNow;
+        List<ActivationEntry> collected = [];
+
+        lock (_lock)
+        {
+            foreach (var pair in _activations.ToArray())
+            {
+                if (!pair.Value.CanCollect(utcNow, idleFor))
+                {
+                    continue;
+                }
+
+                _activations.Remove(pair.Key);
+                collected.Add(pair.Value);
+                TraceLog.Write("directory", $"collect idle activation {pair.Key}");
+            }
+        }
+
+        foreach (var activation in collected)
+        {
+            await activation.DisposeAsync();
+        }
+
+        return collected.Count;
+    }
+
+    public async ValueTask<int> DeactivateAllAsync()
+    {
+        List<ActivationEntry> activations;
+        lock (_lock)
+        {
+            activations = _activations.Values.ToList();
+            _activations.Clear();
+        }
+
+        foreach (var activation in activations)
+        {
+            await activation.DisposeAsync();
+        }
+
+        return activations.Count;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await DeactivateAllAsync();
+    }
+
+    public ActivationDirectoryCheckpoint ExportCheckpoint(string nodeName)
+    {
+        lock (_lock)
+        {
+            var records = _recoveredMetadata.Values
+                .Concat(_activations.Values.Select(item => item.ExportMetadata()))
+                .GroupBy(item => item.GrainId)
+                .Select(group => group
+                    .OrderByDescending(item => item.LastTouchedUtc)
+                    .First())
+                .OrderBy(item => item.GrainId.ToString(), StringComparer.Ordinal)
+                .ToArray();
+
+            return new ActivationDirectoryCheckpoint(nodeName, records);
+        }
+    }
+
+    public static LocalActivationDirectory Restore(
+        IReadOnlyDictionary<string, Func<object>> grainFactories,
+        ActivationDirectoryCheckpoint checkpoint)
+        => new(grainFactories, checkpoint);
+
+    private bool TryRejectStaleRequest(GrainAddress address)
+    {
+        var fencedOwnerVersion = GetFencedOwnerVersion(address.GrainId);
+        if (address.OwnerVersion >= fencedOwnerVersion)
+        {
+            return false;
+        }
+
+        TraceLog.Write(
+            "fencing",
+            $"reject stale request {address.GrainId} on {address.NodeName}: request v{address.OwnerVersion}, fenced v{fencedOwnerVersion}");
+        return true;
+    }
+
+    private long GetFencedOwnerVersion(GrainId grainId)
+        => _fencedOwnerVersions.TryGetValue(grainId, out var version)
+            ? version
+            : 0;
+}

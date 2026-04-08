@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/docs/" />
+  <Folder Name="/src/">
+    <Project Path="src/OrleansReplicaKernel/OrleansReplicaKernel.csproj" />
+  </Folder>
+</Solution>
