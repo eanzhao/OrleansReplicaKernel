@@ -8,8 +8,10 @@ namespace OrleansReplicaKernel.App;
 
 public sealed class OrleansReplicaKernelBuilder
 {
-    private readonly Dictionary<Type, GrainRegistration> _registrations = new();
+    private readonly Dictionary<string, GrainImplementationRegistration> _grainImplementations = new(StringComparer.Ordinal);
+    private readonly Dictionary<Type, GrainReferenceRegistration> _grainReferences = new();
     private readonly Dictionary<Type, ObjectReferenceRegistration> _objectReferenceRegistrations = new();
+    private readonly HashSet<Assembly> _generatedGrainReferenceAssemblies = [];
     private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
     private int _membershipGossipFanout = 1;
@@ -26,14 +28,40 @@ public sealed class OrleansReplicaKernelBuilder
         where TContract : class
         where TGrain : class
     {
-        _registrations.Add(
+        AddGrainImplementation(
+            grainType,
+            () => grainFactory(),
+            replaceExisting: false,
+            sourceDescription: $"manual grain implementation for '{grainType}'");
+        AddGrainReference(
             typeof(TContract),
-            new GrainRegistration(
-                typeof(TContract),
-                grainType,
-                () => grainFactory(),
-                (runtime, grainId) => referenceFactory(runtime, grainId)));
+            grainType,
+            (runtime, grainId) => referenceFactory(runtime, grainId),
+            isGenerated: false,
+            replaceExisting: false,
+            sourceDescription: $"manual grain reference registration for '{typeof(TContract).Name}'");
 
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder AddGrainImplementation<TGrain>(
+        string grainType,
+        Func<TGrain> grainFactory)
+        where TGrain : class
+    {
+        AddGrainImplementation(
+            grainType,
+            () => grainFactory(),
+            replaceExisting: false,
+            sourceDescription: $"manual grain implementation for '{grainType}'");
+
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder AddGeneratedGrainReferencesFromAssembly(Assembly assembly)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        _generatedGrainReferenceAssemblies.Add(assembly);
         return this;
     }
 
@@ -135,13 +163,17 @@ public sealed class OrleansReplicaKernelBuilder
 
     public OrleansReplicaKernelHost Build(string nodeName, params string[] peerNodeNames)
     {
+        RegisterGeneratedGrainReferences();
         RegisterGeneratedObjectReferences();
 
         var requestedNodeNames = new[] { nodeName }
             .Concat(peerNodeNames)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        var grainFactories = _registrations.Values.ToDictionary(item => item.GrainType, item => item.GrainFactory);
+        var grainFactories = _grainImplementations.Values.ToDictionary(
+            item => item.GrainType,
+            item => item.GrainFactory,
+            StringComparer.Ordinal);
 
         InProcessClusterMembership membership;
         string[] allNodeNames;
@@ -271,7 +303,7 @@ public sealed class OrleansReplicaKernelBuilder
             nodeRegistry.Register(currentNodeName, runtime, runtime);
         }
 
-        var bindings = _registrations.ToDictionary(
+        var bindings = _grainReferences.ToDictionary(
             item => item.Key,
             item => new OrleansReplicaKernelRegistration(item.Value.GrainType, item.Value.ReferenceFactory));
 
@@ -296,6 +328,44 @@ public sealed class OrleansReplicaKernelBuilder
                 .Concat(callbackDirectories.Values)
                 .ToArray(),
             bindings);
+    }
+
+    private void RegisterGeneratedGrainReferences()
+    {
+        foreach (var assembly in _generatedGrainReferenceAssemblies)
+        {
+            foreach (var generatedType in GetLoadableTypes(assembly))
+            {
+                if (generatedType is null || !generatedType.IsClass || generatedType.IsAbstract)
+                {
+                    continue;
+                }
+
+                foreach (var attribute in generatedType.GetCustomAttributes<GeneratedGrainReferenceAttribute>())
+                {
+                    ValidateGeneratedGrainReference(
+                        generatedType,
+                        attribute.ContractType,
+                        attribute.GrainType);
+
+                    if (_grainReferences.TryGetValue(attribute.ContractType, out var existingRegistration)
+                        && !existingRegistration.IsGenerated)
+                    {
+                        continue;
+                    }
+
+                    var constructor = generatedType.GetConstructor([typeof(IInvocationRuntime), typeof(GrainId)]);
+                    AddGrainReference(
+                        attribute.ContractType,
+                        attribute.GrainType,
+                        (runtime, grainId) => constructor!.Invoke([runtime, grainId]),
+                        isGenerated: true,
+                        replaceExisting: false,
+                        sourceDescription:
+                        $"generated grain reference '{generatedType.FullName}' in assembly '{assembly.GetName().Name}'");
+                }
+            }
+        }
     }
 
     private void RegisterGeneratedObjectReferences()
@@ -377,6 +447,83 @@ public sealed class OrleansReplicaKernelBuilder
                 sourceDescription));
     }
 
+    private void AddGrainImplementation(
+        string grainType,
+        Func<object> grainFactory,
+        bool replaceExisting,
+        string sourceDescription)
+    {
+        if (replaceExisting)
+        {
+            _grainImplementations[grainType] = new GrainImplementationRegistration(
+                grainType,
+                grainFactory,
+                sourceDescription);
+            return;
+        }
+
+        if (_grainImplementations.TryGetValue(grainType, out var existingRegistration))
+        {
+            throw new InvalidOperationException(
+                $"Grain implementation '{grainType}' is already registered by '{existingRegistration.SourceDescription}'.");
+        }
+
+        _grainImplementations.Add(
+            grainType,
+            new GrainImplementationRegistration(
+                grainType,
+                grainFactory,
+                sourceDescription));
+    }
+
+    private void AddGrainReference(
+        Type contractType,
+        string grainType,
+        Func<IInvocationRuntime, GrainId, object> referenceFactory,
+        bool isGenerated,
+        bool replaceExisting,
+        string sourceDescription)
+    {
+        if (replaceExisting)
+        {
+            _grainReferences[contractType] = new GrainReferenceRegistration(
+                contractType,
+                grainType,
+                referenceFactory,
+                isGenerated,
+                sourceDescription);
+            return;
+        }
+
+        if (_grainReferences.TryGetValue(contractType, out var existingRegistration))
+        {
+            if (existingRegistration.IsGenerated
+                && isGenerated
+                && string.Equals(existingRegistration.SourceDescription, sourceDescription, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (existingRegistration.IsGenerated && isGenerated)
+            {
+                throw new InvalidOperationException(
+                    $"Multiple generated grain reference registrations were found for '{contractType.FullName}': '{existingRegistration.SourceDescription}' and '{sourceDescription}'.");
+            }
+
+            throw new InvalidOperationException(
+                $"Grain reference '{contractType.FullName}' is already registered by '{existingRegistration.SourceDescription}'.");
+        }
+
+        _grainReferences.Add(
+            contractType,
+            new GrainReferenceRegistration(
+                contractType,
+                grainType,
+                referenceFactory,
+                isGenerated,
+                sourceDescription));
+    }
+
     private static void ValidateGeneratedObjectReference(Type generatedType, Type interfaceType)
     {
         if (!typeof(IObjectReference).IsAssignableFrom(generatedType))
@@ -398,6 +545,33 @@ public sealed class OrleansReplicaKernelBuilder
         }
     }
 
+    private static void ValidateGeneratedGrainReference(Type generatedType, Type contractType, string grainType)
+    {
+        if (!contractType.IsInterface)
+        {
+            throw new InvalidOperationException(
+                $"Generated grain reference contract '{contractType.FullName}' must be an interface.");
+        }
+
+        if (!contractType.IsAssignableFrom(generatedType))
+        {
+            throw new InvalidOperationException(
+                $"Generated grain reference '{generatedType.FullName}' must implement '{contractType.FullName}'.");
+        }
+
+        if (string.IsNullOrWhiteSpace(grainType))
+        {
+            throw new InvalidOperationException(
+                $"Generated grain reference '{generatedType.FullName}' must declare a non-empty grain type.");
+        }
+
+        if (generatedType.GetConstructor([typeof(IInvocationRuntime), typeof(GrainId)]) is null)
+        {
+            throw new InvalidOperationException(
+                $"Generated grain reference '{generatedType.FullName}' must expose a public constructor '(IInvocationRuntime, GrainId)'.");
+        }
+    }
+
     private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
     {
         try
@@ -410,11 +584,17 @@ public sealed class OrleansReplicaKernelBuilder
         }
     }
 
-    private sealed record GrainRegistration(
-        Type ContractType,
+    private sealed record GrainImplementationRegistration(
         string GrainType,
         Func<object> GrainFactory,
-        Func<IInvocationRuntime, GrainId, object> ReferenceFactory);
+        string SourceDescription);
+
+    private sealed record GrainReferenceRegistration(
+        Type ContractType,
+        string GrainType,
+        Func<IInvocationRuntime, GrainId, object> ReferenceFactory,
+        bool IsGenerated,
+        string SourceDescription);
 
     private sealed record ObjectReferenceRegistration(
         Type ContractType,

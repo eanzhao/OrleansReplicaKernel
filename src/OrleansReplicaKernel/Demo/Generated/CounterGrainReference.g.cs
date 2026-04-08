@@ -4,6 +4,7 @@ using OrleansReplicaKernel.Invocation;
 
 namespace OrleansReplicaKernel.Demo;
 
+[GeneratedGrainReference(typeof(ICounterGrain), "counter")]
 public sealed partial class CounterGrainReference : ICounterGrain
 {
     public Task<int> AddAsync(int delta, CancellationToken cancellationToken = default)

@@ -318,15 +318,14 @@ OrleansReplicaKernelHost CreateHost(OrleansReplicaKernelRuntimeCheckpoint? check
         .WithMembershipStabilizationWindow(stabilizationWindow)
         .WithMembershipGossipFanout(gossipFanout)
         .WithMembershipAntiEntropyInterval(antiEntropyInterval)
+        .AddGeneratedGrainReferencesFromAssembly(typeof(EchoGrainReference).Assembly)
         .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
-        .AddGrain<IEchoGrain, EchoGrain>(
+        .AddGrainImplementation(
             grainType: "echo",
-            grainFactory: static () => new EchoGrain(),
-            referenceFactory: static (runtime, grainId) => new EchoGrainReference(runtime, grainId))
-        .AddGrain<ICounterGrain, CounterGrain>(
+            grainFactory: static () => new EchoGrain())
+        .AddGrainImplementation(
             grainType: "counter",
-            grainFactory: static () => new CounterGrain(),
-            referenceFactory: static (runtime, grainId) => new CounterGrainReference(runtime, grainId));
+            grainFactory: static () => new CounterGrain());
 
     if (checkpoint is not null)
     {

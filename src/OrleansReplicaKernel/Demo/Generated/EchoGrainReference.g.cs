@@ -4,6 +4,7 @@ using OrleansReplicaKernel.Invocation;
 
 namespace OrleansReplicaKernel.Demo;
 
+[GeneratedGrainReference(typeof(IEchoGrain), "echo")]
 public sealed partial class EchoGrainReference : IEchoGrain
 {
     public Task<string> PingAsync(string text, CancellationToken cancellationToken = default)

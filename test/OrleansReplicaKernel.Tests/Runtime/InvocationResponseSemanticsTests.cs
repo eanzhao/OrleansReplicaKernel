@@ -176,6 +176,17 @@ public sealed class InvocationResponseSemanticsTests
         Assert.Contains("is not a runtime object reference", exception.Message);
     }
 
+    [Fact]
+    public async Task GeneratedGrainReferenceMetadata_BindsContractWithoutManualReferenceFactory()
+    {
+        await using var host = CreateHost();
+        var counter = host.GetGrain<ICounterGrain>("generated-binding");
+
+        var result = await counter.AddAsync(3);
+
+        Assert.Equal(3, result);
+    }
+
     private static OrleansReplicaKernelHost CreateHost(params string[] peerNodeNames)
         => CreateHost(TimeProvider.System, TimeSpan.FromMinutes(5), peerNodeNames);
 
@@ -186,14 +197,13 @@ public sealed class InvocationResponseSemanticsTests
         => new OrleansReplicaKernelBuilder()
             .WithTimeProvider(timeProvider)
             .WithResponseHistoryRetention(responseHistoryRetention)
+            .AddGeneratedGrainReferencesFromAssembly(typeof(EchoGrainReference).Assembly)
             .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
-            .AddGrain<IEchoGrain, EchoGrain>(
+            .AddGrainImplementation(
                 grainType: "echo",
-                grainFactory: static () => new EchoGrain(),
-                referenceFactory: static (runtime, grainId) => new EchoGrainReference(runtime, grainId))
-            .AddGrain<ICounterGrain, CounterGrain>(
+                grainFactory: static () => new EchoGrain())
+            .AddGrainImplementation(
                 grainType: "counter",
-                grainFactory: static () => new CounterGrain(),
-                referenceFactory: static (runtime, grainId) => new CounterGrainReference(runtime, grainId))
+                grainFactory: static () => new CounterGrain())
             .Build("dev-node-1", peerNodeNames);
 }

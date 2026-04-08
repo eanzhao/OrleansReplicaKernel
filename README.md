@@ -16,6 +16,7 @@
 - object reference 的第一版“表示 -> 目标端 rehydrate”边界已经补上，observer reference 不再依赖对象本体直接过 invocation 边界。
 - object reference factory registry 已经接进 builder / host / runtime，typed object reference 的创建和目标端重建现在共用一份注册表。
 - generated object reference metadata + builder 级 assembly scan 已经接上，当前这批 generated object reference 不再需要在应用入口逐个手工 `AddObjectReference<T>()`。
+- generated grain reference metadata + builder 级 assembly scan 也已经接上，`GetGrain<T>()` 用到的 contract binding 现在可以从生成代码自动恢复，不再手工逐个写 reference factory。
 - membership 的早期主链已经有了：
   `probe -> failure detector -> authoritative membership -> gossip dissemination -> local membership view -> stabilization`
 - partial fanout 和 anti-entropy 这两类 dissemination 行为已经有最小实现。
@@ -50,6 +51,7 @@
 - 真正的 placement 策略体系、跨节点负载统计、正式的 rebalancing/handoff 协议还没做完整。
 - 真正的 state storage provider、persistent state、事务、streaming、reminder、timer、provider 生态都还没进入实现阶段。
 - 真正的 client、gateway、序列化运行时、代码生成器、application part、provider 装配体系还没接到当前内核里。
+- 真正完整的 grain metadata manifest 还没做完；现在 grain activation 侧的实现注册还是手工的，只是 contract -> generated reference 这层已经自动化了。
 - 真正完整的 object reference / observer 序列化协议、跨进程 rehydration、callback 与 client/gateway 的正式接线还没做完。
 - 真正完整的 application part / metadata manifest / 多程序集自动发现体系还没接进来；现在的 object reference 自动发现还只是先补到 builder + assembly scan 这一层。
 - 真正的故障恢复、节点重启恢复、rolling upgrade、兼容性和版本演进都还没有正式实现。
