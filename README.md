@@ -23,7 +23,7 @@
 
 ## 仓库结构
 
-- `docs`：从 Orleans 主仓库迁过来的源码研究文档
+- `docs`：对 Orleans 主仓库的源码研究文档
 - `src/OrleansReplicaKernel`：当前这版最小运行时原型
 
 ## 代码目录
