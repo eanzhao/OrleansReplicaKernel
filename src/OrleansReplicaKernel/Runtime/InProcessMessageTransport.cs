@@ -49,6 +49,14 @@ public sealed class InProcessMessageTransport : IMessageTransport
 
         var response = await dispatch.Receiver.ReceiveAsync(message, cancellationToken);
 
+        if (dispatch.DroppedResponseReason is { } droppedResponseReason)
+        {
+            TraceLog.Write(
+                "transport",
+                $"drop response {response.RequestId:N} from {response.ResponderNodeName}: {droppedResponseReason}");
+            throw new ResponseDeliveryException(response.ResponderNodeName, droppedResponseReason);
+        }
+
         TraceLog.Write(
             "transport",
             $"receive response {response.RequestId:N} from {response.ResponderNodeName}");

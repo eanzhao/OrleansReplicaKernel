@@ -3,4 +3,7 @@
   <Folder Name="/src/">
     <Project Path="src/OrleansReplicaKernel/OrleansReplicaKernel.csproj" />
   </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/OrleansReplicaKernel.Tests/OrleansReplicaKernel.Tests.csproj" />
+  </Folder>
 </Solution>

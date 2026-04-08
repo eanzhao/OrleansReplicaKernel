@@ -11,11 +11,14 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
 {
     private const int MaxAttempts = 4;
 
+    private readonly object _requestLock = new();
     private readonly IFailureDetector _failureDetector;
     private readonly IGrainLocator _locator;
     private readonly IGrainRouter _router;
     private readonly IActivationDirectory _activationDirectory;
     private readonly IMessageTransport _transport;
+    private readonly Dictionary<Guid, InvocationResponseMessage> _completedRequests = new();
+    private readonly Dictionary<Guid, Task<InvocationResponseMessage>> _inflightRequests = new();
 
     public InProcessRuntime(
         string nodeName,
@@ -112,6 +115,14 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
                     $"node unavailable for {grainId} via {exception.NodeName}, invalidate and retry request {requestId:N}");
                 _locator.Invalidate(grainId);
             }
+            catch (ResponseDeliveryException exception) when (attempt < MaxAttempts)
+            {
+                _failureDetector.ReportFailure(exception.NodeName, $"response delivery failed: {exception.Reason}");
+                TraceLog.Write(
+                    "retry",
+                    $"response delivery failed for {grainId} via {exception.NodeName}: {exception.Reason}; retry request {requestId:N}");
+                await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken);
+            }
         }
 
         throw new InvalidOperationException($"Request for grain '{grainId}' exhausted its retry budget.");
@@ -125,7 +136,43 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
             "runtime",
             $"receive request {message.RequestId:N} on {NodeName} from {message.SourceNodeName}");
 
-        return await DispatchLocalAsync(message, cancellationToken);
+        Task<InvocationResponseMessage>? requestTask = null;
+        InvocationResponseMessage? completedResponse = null;
+
+        lock (_requestLock)
+        {
+            if (_completedRequests.TryGetValue(message.RequestId, out var completed))
+            {
+                TraceLog.Write(
+                    "dedupe",
+                    $"replay cached response {message.RequestId:N} on {NodeName} for {message.Target.GrainId}");
+                completedResponse = completed;
+            }
+            else if (_inflightRequests.TryGetValue(message.RequestId, out requestTask))
+            {
+                TraceLog.Write(
+                    "dedupe",
+                    $"join in-flight request {message.RequestId:N} on {NodeName} for {message.Target.GrainId}");
+            }
+            else
+            {
+                requestTask = ProcessIncomingRequestAsync(message, cancellationToken);
+                _inflightRequests[message.RequestId] = requestTask;
+            }
+        }
+
+        if (completedResponse is not null)
+        {
+            return completedResponse;
+        }
+
+        if (requestTask is null)
+        {
+            throw new InvalidOperationException(
+                $"No request task was created for request '{message.RequestId:N}'.");
+        }
+
+        return await requestTask;
     }
 
     public ValueTask DisposeAsync() => _activationDirectory.DisposeAsync();
@@ -156,10 +203,34 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
     {
         if (message.Target.NodeName == NodeName)
         {
-            return DispatchLocalAsync(message, cancellationToken);
+            return ReceiveAsync(message, cancellationToken);
         }
 
         return _transport.SendAsync(message, cancellationToken);
+    }
+
+    private async Task<InvocationResponseMessage> ProcessIncomingRequestAsync(
+        InvocationMessage message,
+        CancellationToken cancellationToken)
+    {
+        InvocationResponseMessage response;
+
+        try
+        {
+            response = await DispatchLocalAsync(message, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            response = new InvocationResponseMessage(message.RequestId, NodeName, null, exception);
+        }
+
+        lock (_requestLock)
+        {
+            _inflightRequests.Remove(message.RequestId);
+            _completedRequests[message.RequestId] = response;
+        }
+
+        return response;
     }
 
     private async ValueTask<InvocationResponseMessage> DispatchLocalAsync(

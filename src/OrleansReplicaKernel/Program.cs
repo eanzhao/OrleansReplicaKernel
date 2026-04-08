@@ -52,6 +52,20 @@ try
     TraceLog.Write("result", $"echo-fence-remote = {fenceRemote}");
     TraceLog.Write("result", $"echo-fence-after-stale-retry = {fenceAfterStaleRetry}");
 
+    var dedupEcho = host.GetGrain<IEchoGrain>("dedup");
+    var dedupSeed = await dedupEcho.PingAsync("dedup-seed");
+
+    Console.WriteLine();
+    TraceLog.Write("app", "move dedup owner to remote node dev-node-2");
+    await host.SetOwnerAsync<IEchoGrain>("dedup", "dev-node-2");
+    TraceLog.Write("app", "drop the next response from dev-node-2 after execution, then retry the same request id");
+    host.DropNextResponse("dev-node-2", "simulated response drop after execution");
+    var dedupAfterDroppedResponse = await dedupEcho.PingAsync("after-dropped-response");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-dedup-seed = {dedupSeed}");
+    TraceLog.Write("result", $"echo-dedup-after-dropped-response = {dedupAfterDroppedResponse}");
+
     host.FailNextProbe("dev-node-2", "heartbeat miss #1");
     await host.RunProbeTickAsync();
     LogDeliveries("fanout-1", host.RunGossipTick());
@@ -185,6 +199,8 @@ try
     TraceLog.Write("result", $"echo-fence-seed = {fenceSeed}");
     TraceLog.Write("result", $"echo-fence-remote = {fenceRemote}");
     TraceLog.Write("result", $"echo-fence-after-stale-retry = {fenceAfterStaleRetry}");
+    TraceLog.Write("result", $"echo-dedup-seed = {dedupSeed}");
+    TraceLog.Write("result", $"echo-dedup-after-dropped-response = {dedupAfterDroppedResponse}");
     TraceLog.Write("result", $"counter-before-runtime-checkpoint-first = {counterBeforeCheckpointFirst}");
     TraceLog.Write("result", $"counter-before-runtime-checkpoint-second = {counterBeforeCheckpointSecond}");
     TraceLog.Write("result", $"echo-after-runtime-checkpoint = {recoveredEcho}");

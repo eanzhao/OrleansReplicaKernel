@@ -41,6 +41,20 @@ public sealed class InProcessNodeRegistry
         throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
     }
 
+    public void DropNextResponse(string nodeName, string reason)
+    {
+        lock (_lock)
+        {
+            if (_nodes.TryGetValue(nodeName, out var node))
+            {
+                node.NextDroppedResponseReason = reason;
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
+    }
+
     public DispatchPlan PrepareDispatch(string nodeName)
     {
         lock (_lock)
@@ -56,7 +70,10 @@ public sealed class InProcessNodeRegistry
             var nextResponseError = node.NextResponseError;
             node.NextResponseError = null;
 
-            return new DispatchPlan(node.Receiver, delay, nextResponseError);
+            var nextDroppedResponseReason = node.NextDroppedResponseReason;
+            node.NextDroppedResponseReason = null;
+
+            return new DispatchPlan(node.Receiver, delay, nextResponseError, nextDroppedResponseReason);
         }
     }
 
@@ -119,7 +136,8 @@ public sealed class InProcessNodeRegistry
     public readonly record struct DispatchPlan(
         IMessageReceiver Receiver,
         TimeSpan? Delay,
-        Exception? ResponseError);
+        Exception? ResponseError,
+        string? DroppedResponseReason);
 
     private sealed class NodeState
     {
@@ -133,6 +151,8 @@ public sealed class InProcessNodeRegistry
         public TimeSpan? NextDelay { get; set; }
 
         public Exception? NextResponseError { get; set; }
+
+        public string? NextDroppedResponseReason { get; set; }
 
         public bool IsProbeReachable { get; set; } = true;
 

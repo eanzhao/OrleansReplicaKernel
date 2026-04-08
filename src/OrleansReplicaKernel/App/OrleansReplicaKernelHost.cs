@@ -336,6 +336,12 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         TraceLog.Write("app", $"inject next response failure on {nodeName}: {failureMessage}");
     }
 
+    public void DropNextResponse(string nodeName, string reason)
+    {
+        _nodeRegistry.DropNextResponse(nodeName, reason);
+        TraceLog.Write("app", $"drop next response on {nodeName}: {reason}");
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var managedNode in _managedNodes)
