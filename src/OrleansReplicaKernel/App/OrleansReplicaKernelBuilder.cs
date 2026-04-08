@@ -202,7 +202,7 @@ public sealed class OrleansReplicaKernelBuilder
             locators.Add(currentNodeName, locator);
             activationDirectories.Add(currentNodeName, activationDirectory);
             runtimes.Add(currentNodeName, runtime);
-            nodeRegistry.Register(currentNodeName, runtime);
+            nodeRegistry.Register(currentNodeName, runtime, runtime);
         }
 
         var bindings = _registrations.ToDictionary(

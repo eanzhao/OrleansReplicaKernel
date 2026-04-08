@@ -16,7 +16,7 @@ public sealed class InProcessMessageTransport : IMessageTransport
         _nodeRegistry = nodeRegistry;
     }
 
-    public async ValueTask<InvocationResponseMessage> SendAsync(
+    public async ValueTask SendAsync(
         InvocationMessage message,
         CancellationToken cancellationToken = default)
     {
@@ -32,35 +32,43 @@ public sealed class InProcessMessageTransport : IMessageTransport
             TraceLog.Write(
                 "transport",
                 $"delay request {message.RequestId:N} to {message.Target.NodeName} by {delay}");
-            await Task.Delay(delay, cancellationToken);
+            await Task.Delay(delay, CancellationToken.None);
         }
 
         TraceLog.Write(
             "transport",
-            $"forward request {message.RequestId:N} {message.SourceNodeName} -> {message.Target.NodeName}");
+            $"forward request {message.RequestId:N}/{message.AttemptId:N} {message.SourceNodeName} -> {message.Target.NodeName}");
 
         if (dispatch.ResponseError is not null)
         {
             TraceLog.Write(
                 "transport",
                 $"inject failure response {message.RequestId:N} from {message.Target.NodeName}: {dispatch.ResponseError.GetType().Name}");
-            return new InvocationResponseMessage(message.RequestId, message.Target.NodeName, null, dispatch.ResponseError);
+            await dispatch.ResponseReceiver.ReceiveResponseAsync(
+                new InvocationResponseMessage(
+                    message.RequestId,
+                    message.AttemptId,
+                    message.Target.NodeName,
+                    null,
+                    dispatch.ResponseError),
+                CancellationToken.None);
+            return;
         }
 
-        var response = await dispatch.Receiver.ReceiveAsync(message, cancellationToken);
+        var response = await dispatch.RequestReceiver.ReceiveAsync(message, CancellationToken.None);
 
         if (dispatch.DroppedResponseReason is { } droppedResponseReason)
         {
             TraceLog.Write(
                 "transport",
-                $"drop response {response.RequestId:N} from {response.ResponderNodeName}: {droppedResponseReason}");
+                $"drop response {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}: {droppedResponseReason}");
             throw new ResponseDeliveryException(response.ResponderNodeName, droppedResponseReason);
         }
 
         TraceLog.Write(
             "transport",
-            $"receive response {response.RequestId:N} from {response.ResponderNodeName}");
+            $"receive response {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}");
 
-        return response;
+        await dispatch.ResponseReceiver.ReceiveResponseAsync(response, CancellationToken.None);
     }
 }

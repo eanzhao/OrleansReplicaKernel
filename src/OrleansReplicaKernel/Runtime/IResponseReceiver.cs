@@ -2,9 +2,9 @@ using OrleansReplicaKernel.Messaging;
 
 namespace OrleansReplicaKernel.Runtime;
 
-public interface IMessageTransport
+public interface IResponseReceiver
 {
-    ValueTask SendAsync(
-        InvocationMessage message,
+    ValueTask ReceiveResponseAsync(
+        InvocationResponseMessage response,
         CancellationToken cancellationToken = default);
 }

@@ -66,6 +66,31 @@ try
     TraceLog.Write("result", $"echo-dedup-seed = {dedupSeed}");
     TraceLog.Write("result", $"echo-dedup-after-dropped-response = {dedupAfterDroppedResponse}");
 
+    var lateResponseEcho = host.GetGrain<IEchoGrain>("late-response");
+    var lateResponseSeed = await lateResponseEcho.PingAsync("late-response-seed");
+
+    Console.WriteLine();
+    TraceLog.Write("app", "start a slow local request with a short caller timeout, then let the response arrive late and get discarded");
+    using var lateResponseTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+    string lateResponseTimeoutResult;
+    try
+    {
+        await lateResponseEcho.PingSlowAsync("late-response-timeout", 150, lateResponseTimeout.Token);
+        lateResponseTimeoutResult = "<unexpected-success>";
+    }
+    catch (OperationCanceledException exception)
+    {
+        lateResponseTimeoutResult = exception.GetType().Name;
+    }
+
+    await Task.Delay(TimeSpan.FromMilliseconds(200));
+    var lateResponseAfterTimeout = await lateResponseEcho.PingAsync("late-response-after-timeout");
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-late-response-seed = {lateResponseSeed}");
+    TraceLog.Write("result", $"echo-late-response-timeout = {lateResponseTimeoutResult}");
+    TraceLog.Write("result", $"echo-late-response-after-timeout = {lateResponseAfterTimeout}");
+
     host.FailNextProbe("dev-node-2", "heartbeat miss #1");
     await host.RunProbeTickAsync();
     LogDeliveries("fanout-1", host.RunGossipTick());
@@ -201,6 +226,9 @@ try
     TraceLog.Write("result", $"echo-fence-after-stale-retry = {fenceAfterStaleRetry}");
     TraceLog.Write("result", $"echo-dedup-seed = {dedupSeed}");
     TraceLog.Write("result", $"echo-dedup-after-dropped-response = {dedupAfterDroppedResponse}");
+    TraceLog.Write("result", $"echo-late-response-seed = {lateResponseSeed}");
+    TraceLog.Write("result", $"echo-late-response-timeout = {lateResponseTimeoutResult}");
+    TraceLog.Write("result", $"echo-late-response-after-timeout = {lateResponseAfterTimeout}");
     TraceLog.Write("result", $"counter-before-runtime-checkpoint-first = {counterBeforeCheckpointFirst}");
     TraceLog.Write("result", $"counter-before-runtime-checkpoint-second = {counterBeforeCheckpointSecond}");
     TraceLog.Write("result", $"echo-after-runtime-checkpoint = {recoveredEcho}");

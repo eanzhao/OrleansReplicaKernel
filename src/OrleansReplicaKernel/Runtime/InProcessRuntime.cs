@@ -7,11 +7,12 @@ using OrleansReplicaKernel.Routing;
 
 namespace OrleansReplicaKernel.Runtime;
 
-public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAsyncDisposable
+public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IResponseReceiver, IAsyncDisposable
 {
     private const int MaxAttempts = 4;
 
     private readonly object _requestLock = new();
+    private readonly object _responseLock = new();
     private readonly IFailureDetector _failureDetector;
     private readonly IGrainLocator _locator;
     private readonly IGrainRouter _router;
@@ -19,6 +20,7 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
     private readonly IMessageTransport _transport;
     private readonly Dictionary<Guid, InvocationResponseMessage> _completedRequests = new();
     private readonly Dictionary<Guid, Task<InvocationResponseMessage>> _inflightRequests = new();
+    private readonly Dictionary<Guid, TaskCompletionSource<InvocationResponseMessage>> _pendingResponses = new();
 
     public InProcessRuntime(
         string nodeName,
@@ -47,12 +49,18 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
 
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
-            var routedMessage = CreateRoutedMessage(requestId, grainId, invokable);
+            var attemptId = Guid.NewGuid();
+            var routedMessage = CreateRoutedMessage(requestId, attemptId, grainId, invokable);
+            var completion = RegisterPendingResponse(attemptId);
 
             try
             {
-                var response = await DispatchAsync(routedMessage, cancellationToken);
-                TraceLog.Write("response", $"complete {response.RequestId:N} from {response.ResponderNodeName}");
+                _ = DispatchAsync(routedMessage);
+
+                var response = await completion.Task.WaitAsync(cancellationToken);
+                TraceLog.Write(
+                    "response",
+                    $"complete {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}");
 
                 if (response.Error is not null)
                 {
@@ -77,13 +85,14 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
 
                     TraceLog.Write(
                         "failure",
-                        $"response failure {response.RequestId:N} from {response.ResponderNodeName}: {response.Error.GetType().Name}");
+                        $"response failure {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}: {response.Error.GetType().Name}");
                     if (routedMessage.Target.NodeName != NodeName)
                     {
                         _failureDetector.ReportSuccess(
                             routedMessage.Target.NodeName,
                             "response arrived with remote execution error");
                     }
+
                     ExceptionDispatchInfo.Capture(response.Error).Throw();
                 }
 
@@ -98,17 +107,22 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
             }
             catch (OperationCanceledException)
             {
+                RemovePendingResponse(attemptId);
                 if (routedMessage.Target.NodeName != NodeName)
                 {
                     _failureDetector.ReportFailure(
                         routedMessage.Target.NodeName,
                         "request timed out");
                 }
-                TraceLog.Write("failure", $"request {requestId:N} timed out or was canceled");
+
+                TraceLog.Write(
+                    "failure",
+                    $"request {requestId:N}/{attemptId:N} timed out or was canceled");
                 throw;
             }
             catch (RemoteNodeUnavailableException exception) when (attempt < MaxAttempts)
             {
+                RemovePendingResponse(attemptId);
                 _failureDetector.ReportFailure(exception.NodeName, "remote node unavailable");
                 TraceLog.Write(
                     "retry",
@@ -117,11 +131,19 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
             }
             catch (ResponseDeliveryException exception) when (attempt < MaxAttempts)
             {
-                _failureDetector.ReportFailure(exception.NodeName, $"response delivery failed: {exception.Reason}");
+                RemovePendingResponse(attemptId);
+                _failureDetector.ReportFailure(
+                    exception.NodeName,
+                    $"response delivery failed: {exception.Reason}");
                 TraceLog.Write(
                     "retry",
                     $"response delivery failed for {grainId} via {exception.NodeName}: {exception.Reason}; retry request {requestId:N}");
                 await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken);
+            }
+            catch
+            {
+                RemovePendingResponse(attemptId);
+                throw;
             }
         }
 
@@ -134,10 +156,11 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
     {
         TraceLog.Write(
             "runtime",
-            $"receive request {message.RequestId:N} on {NodeName} from {message.SourceNodeName}");
+            $"receive request {message.RequestId:N}/{message.AttemptId:N} on {NodeName} from {message.SourceNodeName}");
 
         Task<InvocationResponseMessage>? requestTask = null;
         InvocationResponseMessage? completedResponse = null;
+        var joinedInflight = false;
 
         lock (_requestLock)
         {
@@ -146,13 +169,14 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
                 TraceLog.Write(
                     "dedupe",
                     $"replay cached response {message.RequestId:N} on {NodeName} for {message.Target.GrainId}");
-                completedResponse = completed;
+                completedResponse = completed with { AttemptId = message.AttemptId };
             }
             else if (_inflightRequests.TryGetValue(message.RequestId, out requestTask))
             {
                 TraceLog.Write(
                     "dedupe",
                     $"join in-flight request {message.RequestId:N} on {NodeName} for {message.Target.GrainId}");
+                joinedInflight = true;
             }
             else
             {
@@ -172,18 +196,44 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
                 $"No request task was created for request '{message.RequestId:N}'.");
         }
 
-        return await requestTask;
+        var response = await requestTask;
+        return joinedInflight
+            ? response with { AttemptId = message.AttemptId }
+            : response;
+    }
+
+    public ValueTask ReceiveResponseAsync(
+        InvocationResponseMessage response,
+        CancellationToken cancellationToken = default)
+    {
+        TaskCompletionSource<InvocationResponseMessage>? pendingResponse;
+
+        lock (_responseLock)
+        {
+            if (!_pendingResponses.Remove(response.AttemptId, out pendingResponse))
+            {
+                TraceLog.Write(
+                    "response",
+                    $"discard late response {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}");
+                return ValueTask.CompletedTask;
+            }
+        }
+
+        pendingResponse.TrySetResult(response);
+        return ValueTask.CompletedTask;
     }
 
     public ValueTask DisposeAsync() => _activationDirectory.DisposeAsync();
 
     private InvocationMessage CreateRoutedMessage(
         Guid requestId,
+        Guid attemptId,
         GrainId grainId,
         IInvokable invokable)
     {
         var message = new InvocationMessage(
             requestId,
+            attemptId,
             NodeName,
             new GrainAddress(NodeName, grainId, OwnerVersion: 0),
             invokable);
@@ -193,20 +243,27 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
         TraceLog.Write("proxy", $"pack {invokable.InterfaceName}.{invokable.MethodName} -> {grainId}");
         TraceLog.Write(
             "message",
-            $"create {routedMessage.RequestId:N} {routedMessage.SourceNodeName} -> {routedMessage.Target}");
+            $"create {routedMessage.RequestId:N}/{routedMessage.AttemptId:N} {routedMessage.SourceNodeName} -> {routedMessage.Target}");
         return routedMessage;
     }
 
-    private ValueTask<InvocationResponseMessage> DispatchAsync(
-        InvocationMessage message,
-        CancellationToken cancellationToken)
+    private async Task DispatchAsync(InvocationMessage message)
     {
-        if (message.Target.NodeName == NodeName)
+        try
         {
-            return ReceiveAsync(message, cancellationToken);
-        }
+            if (message.Target.NodeName == NodeName)
+            {
+                var localResponse = await ReceiveAsync(message, CancellationToken.None);
+                await ReceiveResponseAsync(localResponse, CancellationToken.None);
+                return;
+            }
 
-        return _transport.SendAsync(message, cancellationToken);
+            await _transport.SendAsync(message, CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            FailPendingResponse(message.AttemptId, exception);
+        }
     }
 
     private async Task<InvocationResponseMessage> ProcessIncomingRequestAsync(
@@ -221,7 +278,12 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
         }
         catch (Exception exception)
         {
-            response = new InvocationResponseMessage(message.RequestId, NodeName, null, exception);
+            response = new InvocationResponseMessage(
+                message.RequestId,
+                message.AttemptId,
+                NodeName,
+                null,
+                exception);
         }
 
         lock (_requestLock)
@@ -241,11 +303,57 @@ public sealed class InProcessRuntime : IInvocationRuntime, IMessageReceiver, IAs
         {
             var activation = _activationDirectory.GetOrCreate(message.Target);
             var result = await activation.InvokeAsync(message, cancellationToken);
-            return new InvocationResponseMessage(message.RequestId, NodeName, result, null);
+            return new InvocationResponseMessage(
+                message.RequestId,
+                message.AttemptId,
+                NodeName,
+                result,
+                null);
         }
         catch (Exception exception)
         {
-            return new InvocationResponseMessage(message.RequestId, NodeName, null, exception);
+            return new InvocationResponseMessage(
+                message.RequestId,
+                message.AttemptId,
+                NodeName,
+                null,
+                exception);
         }
+    }
+
+    private TaskCompletionSource<InvocationResponseMessage> RegisterPendingResponse(Guid attemptId)
+    {
+        var completion = new TaskCompletionSource<InvocationResponseMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        lock (_responseLock)
+        {
+            _pendingResponses.Add(attemptId, completion);
+        }
+
+        return completion;
+    }
+
+    private void RemovePendingResponse(Guid attemptId)
+    {
+        lock (_responseLock)
+        {
+            _pendingResponses.Remove(attemptId);
+        }
+    }
+
+    private void FailPendingResponse(Guid attemptId, Exception exception)
+    {
+        TaskCompletionSource<InvocationResponseMessage>? completion;
+
+        lock (_responseLock)
+        {
+            if (!_pendingResponses.Remove(attemptId, out completion))
+            {
+                return;
+            }
+        }
+
+        completion.TrySetException(exception);
     }
 }

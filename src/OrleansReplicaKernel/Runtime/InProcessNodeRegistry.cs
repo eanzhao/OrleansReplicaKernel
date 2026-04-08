@@ -5,11 +5,14 @@ public sealed class InProcessNodeRegistry
     private readonly object _lock = new();
     private readonly Dictionary<string, NodeState> _nodes = new();
 
-    public void Register(string nodeName, IMessageReceiver receiver)
+    public void Register(
+        string nodeName,
+        IMessageReceiver requestReceiver,
+        IResponseReceiver responseReceiver)
     {
         lock (_lock)
         {
-            _nodes.Add(nodeName, new NodeState(receiver));
+            _nodes.Add(nodeName, new NodeState(requestReceiver, responseReceiver));
         }
     }
 
@@ -73,7 +76,12 @@ public sealed class InProcessNodeRegistry
             var nextDroppedResponseReason = node.NextDroppedResponseReason;
             node.NextDroppedResponseReason = null;
 
-            return new DispatchPlan(node.Receiver, delay, nextResponseError, nextDroppedResponseReason);
+            return new DispatchPlan(
+                node.RequestReceiver,
+                node.ResponseReceiver,
+                delay,
+                nextResponseError,
+                nextDroppedResponseReason);
         }
     }
 
@@ -134,19 +142,25 @@ public sealed class InProcessNodeRegistry
     }
 
     public readonly record struct DispatchPlan(
-        IMessageReceiver Receiver,
+        IMessageReceiver RequestReceiver,
+        IResponseReceiver ResponseReceiver,
         TimeSpan? Delay,
         Exception? ResponseError,
         string? DroppedResponseReason);
 
     private sealed class NodeState
     {
-        public NodeState(IMessageReceiver receiver)
+        public NodeState(
+            IMessageReceiver requestReceiver,
+            IResponseReceiver responseReceiver)
         {
-            Receiver = receiver;
+            RequestReceiver = requestReceiver;
+            ResponseReceiver = responseReceiver;
         }
 
-        public IMessageReceiver Receiver { get; }
+        public IMessageReceiver RequestReceiver { get; }
+
+        public IResponseReceiver ResponseReceiver { get; }
 
         public TimeSpan? NextDelay { get; set; }
 
