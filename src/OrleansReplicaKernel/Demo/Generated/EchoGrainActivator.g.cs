@@ -4,7 +4,10 @@ using OrleansReplicaKernel.Invocation;
 
 namespace OrleansReplicaKernel.Demo;
 
-[GeneratedGrainImplementation("echo", CollectionAgeLimitMilliseconds = 5000)]
+[GeneratedGrainImplementation(
+    "echo",
+    CollectionAgeLimitMilliseconds = 5000,
+    InterleavableMethods = new[] { nameof(IEchoGrain.PingSlowAsync) })]
 public sealed partial class EchoGrain
 {
 }

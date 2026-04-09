@@ -81,6 +81,7 @@ public sealed class LocalActivationDirectoryTests
                 ["TestGrain"] = new(null),
             },
             new LocalCallbackDirectory(),
+            grainSchedulingPolicies: null,
             checkpoint);
 
         Assert.Throws<StaleGrainAddressException>(
@@ -118,8 +119,8 @@ public sealed class LocalActivationDirectoryTests
         var collected = await directory.CollectIdleAsync(TimeSpan.FromMilliseconds(300));
 
         Assert.Equal(1, collected);
-        Assert.Equal(1, fastFactory.CreatedInstances.Count);
-        Assert.Equal(1, slowFactory.CreatedInstances.Count);
+        Assert.Single(fastFactory.CreatedInstances);
+        Assert.Single(slowFactory.CreatedInstances);
 
         var recreatedFast = directory.GetOrCreate(new GrainAddress("node-a", new GrainId("FastGrain", "1"), OwnerVersion: 1));
         var reusedSlow = directory.GetOrCreate(new GrainAddress("node-a", new GrainId("SlowGrain", "1"), OwnerVersion: 1));

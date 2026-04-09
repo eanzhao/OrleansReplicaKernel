@@ -7,7 +7,7 @@
 ## 已做到
 
 - `GetGrain -> grain reference -> IInvokable -> message -> routing -> activation -> scheduler -> response` 这条主调用链已经跑通。
-- 单 activation 串行调度已经有了，基础的 turn 执行模型已经立住。
+- 默认单 activation 串行调度已经有了，基础的 turn 执行模型已经立住；同时已经能按 generated grain metadata 让指定方法 interleave，其他方法继续保持串行。
 - grain identity、address、invocation、message、routing、runtime 这些核心分层已经拆开。
 - 单进程内的多节点模拟已经有了，远端转发和响应回包也已经打通。
 - grain directory、locator、owner 迁移、缓存失效这条链已经有最小实现。
@@ -19,6 +19,8 @@
 - generated grain reference metadata + builder 级 assembly scan 也已经接上，`GetGrain<T>()` 用到的 contract binding 现在可以从生成代码自动恢复，不再手工逐个写 reference factory。
 - generated grain implementation metadata + builder 级 assembly scan 也已经接上，当前 demo 里这批 `grainType -> activator factory` 不再需要手工逐个 `AddGrainImplementation(...)`。
 - generated grain implementation metadata 已经开始影响运行时行为了：不同 grain type 现在可以带不同的 idle collection age，而不是所有 activation 只吃一个全局回收窗口。
+- generated grain implementation metadata 现在也可以给 initial placement 提 hint 了：没有 hint 的 grain 继续按 least-loaded 走，有 prefer-local hint 的 grain 会优先落到本地 healthy node。
+- generated grain implementation metadata 现在也可以给调度层提 hint 了：当前已经支持把指定方法标成 interleavable turn，同一个 activation 里这些方法可以并发重叠执行，其他方法仍然保持独占 turn。
 - membership 的早期主链已经有了：
   `probe -> failure detector -> authoritative membership -> gossip dissemination -> local membership view -> stabilization`
 - partial fanout 和 anti-entropy 这两类 dissemination 行为已经有最小实现。
@@ -40,7 +42,7 @@
 - `Identity`：`GrainId` / `GrainAddress`
 - `Invocation`：强类型引用和 `IInvokable`
 - `Messaging`：请求/响应消息
-- `Scheduling`：单 activation 串行调度
+- `Scheduling`：单 activation 调度，默认串行，支持方法级 interleaving hint
 - `Routing`：grain directory / locator / router / placement / rebalancing / relocation / local activation directory
 - `Runtime`：runtime、transport、membership、probe、gossip、local membership view、failure detector
 - `Demo`：示例 grain 和模拟生成代码
@@ -53,7 +55,7 @@
 - 真正的 placement 策略体系、跨节点负载统计、正式的 rebalancing/handoff 协议还没做完整。
 - 真正的 state storage provider、persistent state、事务、streaming、reminder、timer、provider 生态都还没进入实现阶段。
 - 真正的 client、gateway、序列化运行时、代码生成器、application part、provider 装配体系还没接到当前内核里。
-- 真正完整的 grain metadata manifest 还没做完；现在只是把 grain reference binding、grain activator discovery、grain collection age 这几层推进到了 generated metadata + assembly scan，这还不是完整的 grain property / lifecycle / placement manifest。
+- 真正完整的 grain metadata manifest 还没做完；现在只是把 grain reference binding、grain activator discovery、grain collection age、placement hint、方法级 interleaving hint 这几层推进到了 generated metadata + assembly scan，这还不是完整的 grain property / lifecycle / placement manifest。
 - 真正完整的 object reference / observer 序列化协议、跨进程 rehydration、callback 与 client/gateway 的正式接线还没做完。
 - 真正完整的 application part / metadata manifest / 多程序集自动发现体系还没接进来；现在的 object reference 自动发现还只是先补到 builder + assembly scan 这一层。
 - 真正的故障恢复、节点重启恢复、rolling upgrade、兼容性和版本演进都还没有正式实现。
@@ -133,12 +135,14 @@ checkpoint 在当前实现里扮演的角色也刻意收得很窄：
 10. 销毁 host，再用 runtime checkpoint 重建一份新 host
 11. 重建后的第一眼 membership view、grain directory 和 activation metadata 都已经是恢复过的，不需要再从空状态开始同步
 12. 这时直接调 echo，directory 会用恢复出来的 owner 记录配合 stable local view 立刻做 relocation，不需要重新从空目录学习
-13. 再新建一个 `fresh-placement` grain，确认 initial placement 会跳过不健康节点，优先放到更空的 `dev-node-3`
-14. 然后对 `echo/alpha` 跑一次 `RebalanceGrainAsync`，确认 rebalancing 只做决策，handoff 才真的切 owner；而且因为 `EchoGrain` 支持 warm handoff，计数会跟着一起迁过去
-15. 再单独跑一条 `echo/fallback`，分别注入一次 apply 失败和 capture 失败，确认系统都会自动退回 cold path
-16. 再跑一条 `echo/drain`，先发一个慢调用，再在它还没结束时 handoff，确认旧 turn 会先 drain 完，再切 owner
-17. 再调 `counter` 时，你会看到先命中“恢复出来的 activation metadata”，但真实实例仍然是新建的，所以计数不会延续到 checkpoint 前的值
-18. 最后再用 idle collection 验证 activation metadata 也不会被错误地当成活实例
+13. 再新建一个 `fresh-placement` grain，确认没有特殊 hint 的 grain 会继续按 least-loaded 放到更空的 `dev-node-3`
+14. 再新建一个带 prefer-local hint 的 `counter/prefer-local-placement`，确认它会优先留在本地 healthy node，而不是跟着 least-loaded 走
+15. 再跑一条 `echo/interleaving`，连续发两个 `PingSlowAsync`，确认 generated grain metadata 已经能把指定方法放进 interleavable turn，整体耗时会明显小于串行两次相加
+16. 然后对 `echo/alpha` 跑一次 `RebalanceGrainAsync`，确认 rebalancing 只做决策，handoff 才真的切 owner；而且因为 `EchoGrain` 支持 warm handoff，计数会跟着一起迁过去
+17. 再单独跑一条 `echo/fallback`，分别注入一次 apply 失败和 capture 失败，确认系统都会自动退回 cold path
+18. 再跑一条 `echo/drain`，先发一个慢调用，再在它还没结束时 handoff，确认旧 turn 会先 drain 完，再切 owner
+19. 再调 `counter` 时，你会看到先命中“恢复出来的 activation metadata”，但真实实例仍然是新建的，所以计数不会延续到 checkpoint 前的值
+20. 最后再用 idle collection 验证不同 grain type 可以吃不同的 collection age：`counter` 会先被收掉，`echo` 会继续活着；同时 activation metadata 也不会被错误地当成活实例
 
 ## 运行
 
@@ -163,6 +167,7 @@ dotnet run --project src/OrleansReplicaKernel/OrleansReplicaKernel.csproj
 - `runtime-checkpoint` / `membership-after-restart`：runtime checkpoint 导出和 restart recovery 的效果
 - `directory-after-restart` / `activation-metadata-after-restart`：directory owner 记录和 activation metadata 的恢复效果
 - `placement`：第一次看到新 grain 时，initial placement 选中了哪个健康节点
+- `scheduler`：某个 turn 是不是按 exclusive 还是 interleavable 方式进入 activation
 - `rebalancing`：负载不均时，policy 认为应该把 grain 迁到哪儿
 - `handoff-state`：旧 activation 有没有导出 warm handoff state，目标 activation 有没有接到
 - `handoff`：真正执行 owner 切换、locator 失效和旧 activation 下线的动作

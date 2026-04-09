@@ -11,14 +11,16 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
     private readonly IPlacementPolicy _placementPolicy;
     private readonly IPlacementLoadProvider _loadProvider;
     private readonly IOwnerRelocationPolicy _relocationPolicy;
+    private readonly IReadOnlyDictionary<string, GrainTypePlacementHint> _placementHints;
     private readonly Dictionary<GrainId, GrainOwnerRecord> _records = new();
 
     public InMemoryGrainDirectory(
         IClusterMembershipView membershipView,
         IPlacementPolicy placementPolicy,
         IPlacementLoadProvider loadProvider,
-        IOwnerRelocationPolicy relocationPolicy)
-        : this(membershipView, placementPolicy, loadProvider, relocationPolicy, checkpoint: null)
+        IOwnerRelocationPolicy relocationPolicy,
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null)
+        : this(membershipView, placementPolicy, loadProvider, relocationPolicy, checkpoint: null, placementHints)
     {
     }
 
@@ -27,12 +29,14 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
         IPlacementPolicy placementPolicy,
         IPlacementLoadProvider loadProvider,
         IOwnerRelocationPolicy relocationPolicy,
-        GrainDirectoryCheckpoint? checkpoint)
+        GrainDirectoryCheckpoint? checkpoint,
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints)
     {
         _membershipView = membershipView;
         _placementPolicy = placementPolicy;
         _loadProvider = loadProvider;
         _relocationPolicy = relocationPolicy;
+        _placementHints = placementHints ?? new Dictionary<string, GrainTypePlacementHint>(StringComparer.Ordinal);
 
         if (checkpoint is null)
         {
@@ -80,7 +84,8 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
             var initialOwnerNodeName = _placementPolicy.SelectInitialOwner(
                 grainId,
                 _membershipView,
-                _loadProvider.GetSnapshot());
+                _loadProvider.GetSnapshot(),
+                ResolvePlacementHint(grainId.GrainType));
             var created = new GrainOwnerRecord(grainId, initialOwnerNodeName, Version: 1);
             _records.Add(grainId, created);
 
@@ -135,6 +140,12 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
         IPlacementPolicy placementPolicy,
         IPlacementLoadProvider loadProvider,
         IOwnerRelocationPolicy relocationPolicy,
-        GrainDirectoryCheckpoint checkpoint)
-        => new(membershipView, placementPolicy, loadProvider, relocationPolicy, checkpoint);
+        GrainDirectoryCheckpoint checkpoint,
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null)
+        => new(membershipView, placementPolicy, loadProvider, relocationPolicy, checkpoint, placementHints);
+
+    private GrainTypePlacementHint ResolvePlacementHint(string grainType)
+        => _placementHints.TryGetValue(grainType, out var hint)
+            ? hint
+            : GrainTypePlacementHint.Default;
 }

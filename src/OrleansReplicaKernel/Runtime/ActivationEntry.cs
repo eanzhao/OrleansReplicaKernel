@@ -16,13 +16,24 @@ public sealed class ActivationEntry : IAsyncDisposable
     private readonly object _instance;
     private readonly object _quiesceLock = new();
     private readonly ActivationScheduler _scheduler;
+    private readonly GrainTypeSchedulingPolicy _schedulingPolicy;
     private long _lastTouchedUtcTicks;
     private int _lifecycleState;
     private int _pendingInvocationCount;
     private TaskCompletionSource<bool>? _quiescedCompletion;
 
-    public ActivationEntry(GrainId grainId, object instance, long ownerVersion)
-        : this(grainId, instance, DateTimeOffset.UtcNow, ownerVersion, isRecovered: false)
+    public ActivationEntry(
+        GrainId grainId,
+        object instance,
+        long ownerVersion,
+        GrainTypeSchedulingPolicy schedulingPolicy)
+        : this(
+            grainId,
+            instance,
+            DateTimeOffset.UtcNow,
+            ownerVersion,
+            schedulingPolicy,
+            isRecovered: false)
     {
     }
 
@@ -31,11 +42,13 @@ public sealed class ActivationEntry : IAsyncDisposable
         object instance,
         DateTimeOffset lastTouchedUtc,
         long ownerVersion,
+        GrainTypeSchedulingPolicy schedulingPolicy,
         bool isRecovered)
     {
         GrainId = grainId;
         OwnerVersion = ownerVersion;
         _instance = instance;
+        _schedulingPolicy = schedulingPolicy;
         _scheduler = new ActivationScheduler(grainId.ToString());
         _lastTouchedUtcTicks = lastTouchedUtc.UtcTicks;
 
@@ -84,8 +97,10 @@ public sealed class ActivationEntry : IAsyncDisposable
 
         try
         {
+            var allowInterleaving = _schedulingPolicy.AllowsInterleaving(message.Invokable.MethodName);
             return await _scheduler.EnqueueAsync(
                 $"{message.Invokable.InterfaceName}.{message.Invokable.MethodName}",
+                allowInterleaving,
                 turnToken => ActivationExecutionContext.RunAsync(
                     runtime,
                     async () =>
@@ -181,8 +196,17 @@ public sealed class ActivationEntry : IAsyncDisposable
             $"apply warm handoff state {GrainId} captured={handoffState.CapturedUtc:O}");
     }
 
-    public static ActivationEntry Restore(ActivationMetadataRecord metadata, object instance)
-        => new(metadata.GrainId, instance, metadata.LastTouchedUtc, metadata.OwnerVersion, isRecovered: true);
+    public static ActivationEntry Restore(
+        ActivationMetadataRecord metadata,
+        object instance,
+        GrainTypeSchedulingPolicy schedulingPolicy)
+        => new(
+            metadata.GrainId,
+            instance,
+            metadata.LastTouchedUtc,
+            metadata.OwnerVersion,
+            schedulingPolicy,
+            isRecovered: true);
 
     private Task WaitForDrainAsync()
     {

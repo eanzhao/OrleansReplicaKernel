@@ -1,6 +1,7 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Runtime;
+using OrleansReplicaKernel.Scheduling;
 
 namespace OrleansReplicaKernel.Routing;
 
@@ -14,6 +15,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     private readonly LocalCallbackDirectory _callbackDirectory;
     private readonly IReadOnlyDictionary<string, Func<object>> _grainFactories;
     private readonly IReadOnlyDictionary<string, GrainTypeCollectionPolicy> _grainCollectionPolicies;
+    private readonly IReadOnlyDictionary<string, GrainTypeSchedulingPolicy> _grainSchedulingPolicies;
     private readonly Dictionary<GrainId, ActivationEntry> _activations = new();
     private readonly Dictionary<GrainId, PendingHandoffState> _pendingHandoffStates = new();
     private readonly Dictionary<GrainId, ActivationMetadataRecord> _recoveredMetadata = new();
@@ -22,8 +24,14 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     public LocalActivationDirectory(
         IReadOnlyDictionary<string, Func<object>> grainFactories,
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
-        LocalCallbackDirectory callbackDirectory)
-        : this(grainFactories, grainCollectionPolicies, callbackDirectory, checkpoint: null)
+        LocalCallbackDirectory callbackDirectory,
+        IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null)
+        : this(
+            grainFactories,
+            grainCollectionPolicies,
+            callbackDirectory,
+            grainSchedulingPolicies,
+            checkpoint: null)
     {
     }
 
@@ -31,11 +39,13 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, Func<object>> grainFactories,
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
+        IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         ActivationDirectoryCheckpoint? checkpoint)
     {
         _grainFactories = grainFactories;
         _grainCollectionPolicies = grainCollectionPolicies;
         _callbackDirectory = callbackDirectory;
+        _grainSchedulingPolicies = grainSchedulingPolicies ?? new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal);
 
         if (checkpoint is null)
         {
@@ -111,7 +121,11 @@ public sealed class LocalActivationDirectory : IActivationDirectory
                     $"recover activation metadata {address.GrainId} on {address.NodeName} last-touched={recovered.LastTouchedUtc:O} owner-v{recovered.OwnerVersion}, create fresh instance");
             }
 
-            var created = new ActivationEntry(address.GrainId, grainFactory(), address.OwnerVersion);
+            var created = new ActivationEntry(
+                address.GrainId,
+                grainFactory(),
+                address.OwnerVersion,
+                ResolveSchedulingPolicy(address.GrainId.GrainType));
             _fencedOwnerVersions[address.GrainId] = address.OwnerVersion;
 
             if (_pendingHandoffStates.TryGetValue(address.GrainId, out var pendingHandoff))
@@ -352,8 +366,9 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, Func<object>> grainFactories,
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
+        IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         ActivationDirectoryCheckpoint checkpoint)
-        => new(grainFactories, grainCollectionPolicies, callbackDirectory, checkpoint);
+        => new(grainFactories, grainCollectionPolicies, callbackDirectory, grainSchedulingPolicies, checkpoint);
 
     private TimeSpan ResolveIdleWindow(string grainType, TimeSpan defaultIdleWindow)
     {
@@ -363,6 +378,16 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         }
 
         return defaultIdleWindow;
+    }
+
+    private GrainTypeSchedulingPolicy ResolveSchedulingPolicy(string grainType)
+    {
+        if (_grainSchedulingPolicies.TryGetValue(grainType, out var policy))
+        {
+            return policy;
+        }
+
+        return GrainTypeSchedulingPolicy.Default;
     }
 
     private bool TryRejectStaleRequest(GrainAddress address)

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Demo;
 using OrleansReplicaKernel.Runtime;
@@ -212,11 +213,31 @@ try
 
     var freshEcho = host.GetGrain<IEchoGrain>("fresh-placement");
     var freshEchoResult = await freshEcho.PingAsync("initial-placement");
+    var preferredLocalCounter = host.GetGrain<ICounterGrain>("prefer-local-placement");
+    var preferredLocalCounterResult = await preferredLocalCounter.AddAsync(1);
 
     Console.WriteLine();
     TraceLog.Write("result", $"echo-fresh-initial-placement = {freshEchoResult}");
+    TraceLog.Write("result", $"counter-prefer-local-placement = {preferredLocalCounterResult}");
     LogDirectoryState("directory-after-initial-placement");
     LogPlacementLoad("placement-load-after-initial-placement");
+
+    var interleavingEcho = host.GetGrain<IEchoGrain>("interleaving");
+    Console.WriteLine();
+    TraceLog.Write(
+        "app",
+        "run two PingSlowAsync turns against the same echo activation; generated metadata allows this method to interleave");
+    var interleavingStopwatch = Stopwatch.StartNew();
+    var interleavingFirst = interleavingEcho.PingSlowAsync("interleave-a", 150);
+    await Task.Delay(TimeSpan.FromMilliseconds(20));
+    var interleavingSecond = interleavingEcho.PingSlowAsync("interleave-b", 150);
+    var interleavingResults = await Task.WhenAll(interleavingFirst, interleavingSecond);
+    interleavingStopwatch.Stop();
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-interleave-a = {interleavingResults[0]}");
+    TraceLog.Write("result", $"echo-interleave-b = {interleavingResults[1]}");
+    TraceLog.Write("result", $"echo-interleave-elapsed-ms = {interleavingStopwatch.ElapsedMilliseconds}");
 
     TraceLog.Write("app", "rebalance echo/alpha and carry warm handoff state into the new activation");
     var handoffPerformed = await host.RebalanceGrainAsync<IEchoGrain>("alpha");
@@ -299,6 +320,10 @@ try
     TraceLog.Write("result", $"echo-after-runtime-checkpoint = {recoveredEcho}");
     TraceLog.Write("result", $"counter-after-runtime-checkpoint = {counterAfterRestart}");
     TraceLog.Write("result", $"echo-fresh-initial-placement = {freshEchoResult}");
+    TraceLog.Write("result", $"counter-prefer-local-placement = {preferredLocalCounterResult}");
+    TraceLog.Write("result", $"echo-interleave-a = {interleavingResults[0]}");
+    TraceLog.Write("result", $"echo-interleave-b = {interleavingResults[1]}");
+    TraceLog.Write("result", $"echo-interleave-elapsed-ms = {interleavingStopwatch.ElapsedMilliseconds}");
     TraceLog.Write("result", $"handoff-alpha = {handoffPerformed}");
     TraceLog.Write("result", $"echo-alpha-after-handoff = {alphaAfterHandoff}");
     TraceLog.Write("result", $"echo-fallback-seed = {fallbackSeed}");

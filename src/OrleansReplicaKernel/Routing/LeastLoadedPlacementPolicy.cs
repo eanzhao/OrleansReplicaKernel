@@ -16,8 +16,17 @@ public sealed class LeastLoadedPlacementPolicy : IPlacementPolicy
     public string SelectInitialOwner(
         GrainId grainId,
         IClusterMembershipView membershipView,
-        PlacementLoadSnapshot loadSnapshot)
+        PlacementLoadSnapshot loadSnapshot,
+        GrainTypePlacementHint placementHint)
     {
+        if (placementHint.PreferLocalPlacement && membershipView.IsHealthy(_preferredNodeName))
+        {
+            TraceLog.Write(
+                "placement",
+                $"select local preferred owner {_preferredNodeName} for {grainId} via grain placement hint");
+            return _preferredNodeName;
+        }
+
         var candidates = membershipView.GetHealthyMembers()
             .Select(nodeName => new ActivationLoadRecord(nodeName, loadSnapshot.GetActivationCount(nodeName)))
             .OrderBy(item => item.ActivationCount)

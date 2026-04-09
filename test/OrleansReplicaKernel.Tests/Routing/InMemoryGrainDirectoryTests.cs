@@ -89,6 +89,30 @@ public sealed class InMemoryGrainDirectoryTests
         Assert.Equal(moved, restored.Resolve(grainB));
     }
 
+    [Fact]
+    public void Resolve_PassesPerGrainPlacementHintToPlacementPolicy()
+    {
+        var membershipView = new StubClusterMembershipView(
+            new Dictionary<string, NodeHealthStatus>
+            {
+                ["node-a"] = NodeHealthStatus.Healthy,
+            });
+        var placementPolicy = new StaticPlacementPolicy("node-a");
+        var directory = new InMemoryGrainDirectory(
+            membershipView,
+            placementPolicy,
+            new StaticLoadProvider(new PlacementLoadSnapshot([])),
+            new StaticRelocationPolicy("node-a"),
+            new Dictionary<string, GrainTypePlacementHint>
+            {
+                ["Counter"] = new(PreferLocalPlacement: true),
+            });
+
+        directory.Resolve(new GrainId("Counter", "1"));
+
+        Assert.True(placementPolicy.LastPlacementHint.PreferLocalPlacement);
+    }
+
     private sealed class StaticPlacementPolicy : IPlacementPolicy
     {
         private readonly string _ownerNodeName;
@@ -100,12 +124,16 @@ public sealed class InMemoryGrainDirectoryTests
 
         public int CallCount { get; private set; }
 
+        public GrainTypePlacementHint LastPlacementHint { get; private set; } = GrainTypePlacementHint.Default;
+
         public string SelectInitialOwner(
             GrainId grainId,
             IClusterMembershipView membershipView,
-            PlacementLoadSnapshot loadSnapshot)
+            PlacementLoadSnapshot loadSnapshot,
+            GrainTypePlacementHint placementHint)
         {
             CallCount++;
+            LastPlacementHint = placementHint;
             return _ownerNodeName;
         }
     }

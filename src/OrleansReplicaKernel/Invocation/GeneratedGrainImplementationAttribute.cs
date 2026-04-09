@@ -16,4 +16,8 @@ public sealed class GeneratedGrainImplementationAttribute : Attribute
     public string GrainType { get; }
 
     public int CollectionAgeLimitMilliseconds { get; set; } = -1;
+
+    public bool PreferLocalPlacement { get; set; }
+
+    public string[] InterleavableMethods { get; set; } = [];
 }

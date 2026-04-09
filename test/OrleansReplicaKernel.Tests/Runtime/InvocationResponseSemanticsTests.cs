@@ -1,6 +1,8 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Demo;
+using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Tests.TestSupport;
+using System.Diagnostics;
 
 namespace OrleansReplicaKernel.Tests.Runtime;
 
@@ -217,6 +219,63 @@ public sealed class InvocationResponseSemanticsTests
         Assert.Equal(1, collected);
         Assert.Equal("echo:after-collect:count=2", echoAfterCollect);
         Assert.Equal(2, counterAfterCollect);
+    }
+
+    [Fact]
+    public async Task GeneratedGrainImplementationMetadata_CanInfluenceInitialPlacement()
+    {
+        await using var host = CreateHost("dev-node-1", "dev-node-2", "dev-node-3");
+
+        var echoA = host.GetGrain<IEchoGrain>("placement-load-a");
+        var echoB = host.GetGrain<IEchoGrain>("placement-load-b");
+        var counter = host.GetGrain<ICounterGrain>("prefer-local-placement");
+
+        await echoA.PingAsync("seed-a");
+        await echoB.PingAsync("seed-b");
+        await counter.AddAsync(1);
+
+        var directoryState = host.DescribeGrainDirectory();
+
+        Assert.Contains("echo/placement-load-a->dev-node-1@v1", directoryState);
+        Assert.Contains("echo/placement-load-b->dev-node-2@v1", directoryState);
+        Assert.Contains("counter/prefer-local-placement->dev-node-1@v1", directoryState);
+    }
+
+    [Fact]
+    public async Task GeneratedGrainImplementationMetadata_CanAllowInterleavingForSelectedMethods()
+    {
+        await using var host = CreateHost();
+        var echo = host.GetGrain<IEchoGrain>("interleaving");
+        var stopwatch = Stopwatch.StartNew();
+
+        var first = echo.PingSlowAsync("interleave-a", 150);
+        await Task.Delay(20);
+        var second = echo.PingSlowAsync("interleave-b", 150);
+
+        var results = await Task.WhenAll(first, second);
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(260));
+        Assert.Contains("echo:interleave-a:count=1", results);
+        Assert.Contains("echo:interleave-b:count=2", results);
+    }
+
+    [Fact]
+    public async Task NonInterleavableMethod_StillWaitsBehindInterleavableTurn()
+    {
+        await using var host = CreateHost();
+        var echo = host.GetGrain<IEchoGrain>("interleaving-barrier");
+
+        var first = echo.PingSlowAsync("slow-first", 150);
+        await Task.Delay(20);
+        var second = echo.PingAsync("exclusive-after-slow");
+
+        await Task.Delay(60);
+        Assert.False(second.IsCompleted);
+
+        var results = await Task.WhenAll(first, second);
+        Assert.Contains("echo:slow-first:count=1", results);
+        Assert.Contains("echo:exclusive-after-slow:count=2", results);
     }
 
     private static OrleansReplicaKernelHost CreateHost(params string[] peerNodeNames)

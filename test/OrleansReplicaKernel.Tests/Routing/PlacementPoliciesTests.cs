@@ -25,7 +25,11 @@ public sealed class PlacementPoliciesTests
                 new ActivationLoadRecord("node-c", 0),
             ]);
 
-        var owner = policy.SelectInitialOwner(new GrainId("Echo", "1"), membershipView, snapshot);
+        var owner = policy.SelectInitialOwner(
+            new GrainId("Echo", "1"),
+            membershipView,
+            snapshot,
+            GrainTypePlacementHint.Default);
 
         Assert.Equal("node-b", owner);
     }
@@ -41,7 +45,11 @@ public sealed class PlacementPoliciesTests
         var policy = new LeastLoadedPlacementPolicy("node-a");
 
         var exception = Assert.Throws<InvalidOperationException>(
-            () => policy.SelectInitialOwner(new GrainId("Echo", "1"), membershipView, new PlacementLoadSnapshot([])));
+            () => policy.SelectInitialOwner(
+                new GrainId("Echo", "1"),
+                membershipView,
+                new PlacementLoadSnapshot([]),
+                GrainTypePlacementHint.Default));
 
         Assert.Contains("No healthy placement candidate", exception.Message);
     }
@@ -113,5 +121,55 @@ public sealed class PlacementPoliciesTests
             snapshot);
 
         Assert.Null(target);
+    }
+
+    [Fact]
+    public void LeastLoadedPlacementPolicy_PreferLocalPlacementHint_OverridesLowerLoadRemoteNode()
+    {
+        var membershipView = new StubClusterMembershipView(
+            new Dictionary<string, NodeHealthStatus>
+            {
+                ["node-a"] = NodeHealthStatus.Healthy,
+                ["node-b"] = NodeHealthStatus.Healthy,
+            });
+        var policy = new LeastLoadedPlacementPolicy("node-a");
+        var snapshot = new PlacementLoadSnapshot(
+            [
+                new ActivationLoadRecord("node-a", 10),
+                new ActivationLoadRecord("node-b", 1),
+            ]);
+
+        var owner = policy.SelectInitialOwner(
+            new GrainId("Counter", "1"),
+            membershipView,
+            snapshot,
+            new GrainTypePlacementHint(PreferLocalPlacement: true));
+
+        Assert.Equal("node-a", owner);
+    }
+
+    [Fact]
+    public void LeastLoadedPlacementPolicy_PreferLocalPlacementHint_FallsBackWhenLocalNodeUnhealthy()
+    {
+        var membershipView = new StubClusterMembershipView(
+            new Dictionary<string, NodeHealthStatus>
+            {
+                ["node-a"] = NodeHealthStatus.Unhealthy,
+                ["node-b"] = NodeHealthStatus.Healthy,
+            });
+        var policy = new LeastLoadedPlacementPolicy("node-a");
+        var snapshot = new PlacementLoadSnapshot(
+            [
+                new ActivationLoadRecord("node-a", 0),
+                new ActivationLoadRecord("node-b", 3),
+            ]);
+
+        var owner = policy.SelectInitialOwner(
+            new GrainId("Counter", "1"),
+            membershipView,
+            snapshot,
+            new GrainTypePlacementHint(PreferLocalPlacement: true));
+
+        Assert.Equal("node-b", owner);
     }
 }

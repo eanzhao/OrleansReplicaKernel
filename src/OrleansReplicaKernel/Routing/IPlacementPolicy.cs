@@ -8,5 +8,6 @@ public interface IPlacementPolicy
     string SelectInitialOwner(
         GrainId grainId,
         IClusterMembershipView membershipView,
-        PlacementLoadSnapshot loadSnapshot);
+        PlacementLoadSnapshot loadSnapshot,
+        GrainTypePlacementHint placementHint);
 }

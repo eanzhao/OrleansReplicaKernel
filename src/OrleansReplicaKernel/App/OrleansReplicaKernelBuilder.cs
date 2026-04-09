@@ -3,6 +3,7 @@ using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
+using OrleansReplicaKernel.Scheduling;
 
 namespace OrleansReplicaKernel.App;
 
@@ -33,6 +34,8 @@ public sealed class OrleansReplicaKernelBuilder
             grainType,
             () => grainFactory(),
             collectionAgeLimit: null,
+            preferLocalPlacement: false,
+            interleavableMethods: null,
             isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
@@ -56,6 +59,8 @@ public sealed class OrleansReplicaKernelBuilder
             grainType,
             () => grainFactory(),
             collectionAgeLimit: null,
+            preferLocalPlacement: false,
+            interleavableMethods: null,
             isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
@@ -191,6 +196,14 @@ public sealed class OrleansReplicaKernelBuilder
             item => item.GrainType,
             item => new GrainTypeCollectionPolicy(item.CollectionAgeLimit),
             StringComparer.Ordinal);
+        var grainPlacementHints = _grainImplementations.Values.ToDictionary(
+            item => item.GrainType,
+            item => new GrainTypePlacementHint(item.PreferLocalPlacement),
+            StringComparer.Ordinal);
+        var grainSchedulingPolicies = _grainImplementations.Values.ToDictionary(
+            item => item.GrainType,
+            item => new GrainTypeSchedulingPolicy(item.InterleavableMethods),
+            StringComparer.Ordinal);
 
         InProcessClusterMembership membership;
         string[] allNodeNames;
@@ -274,13 +287,15 @@ public sealed class OrleansReplicaKernelBuilder
                 membershipViews[nodeName],
                 placementPolicy,
                 loadProvider,
-                relocationPolicy)
+                relocationPolicy,
+                grainPlacementHints)
             : InMemoryGrainDirectory.Restore(
                 membershipViews[nodeName],
                 placementPolicy,
                 loadProvider,
                 relocationPolicy,
-                runtimeCheckpoint.GrainDirectory);
+                runtimeCheckpoint.GrainDirectory,
+                grainPlacementHints);
         var probeService = new InProcessClusterProbeService(nodeName, membership, nodeRegistry, failureDetector);
         var locators = new Dictionary<string, IGrainLocator>(StringComparer.Ordinal);
         var runtimes = new Dictionary<string, InProcessRuntime>(StringComparer.Ordinal);
@@ -299,11 +314,16 @@ public sealed class OrleansReplicaKernelBuilder
             var activationCheckpoint = runtimeCheckpoint?.ActivationDirectories
                 .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));
             var activationDirectory = activationCheckpoint is null
-                ? new LocalActivationDirectory(grainFactories, grainCollectionPolicies, callbackDirectory)
+                ? new LocalActivationDirectory(
+                    grainFactories,
+                    grainCollectionPolicies,
+                    callbackDirectory,
+                    grainSchedulingPolicies)
                 : LocalActivationDirectory.Restore(
                     grainFactories,
                     grainCollectionPolicies,
                     callbackDirectory,
+                    grainSchedulingPolicies,
                     activationCheckpoint);
             var router = new LocalGrainRouter(currentNodeName, locator);
             var runtime = new InProcessRuntime(
@@ -378,6 +398,8 @@ public sealed class OrleansReplicaKernelBuilder
                         attribute.GrainType,
                         () => constructor!.Invoke([])!,
                         collectionAgeLimit,
+                        attribute.PreferLocalPlacement,
+                        attribute.InterleavableMethods,
                         isGenerated: true,
                         replaceExisting: false,
                         sourceDescription:
@@ -508,6 +530,8 @@ public sealed class OrleansReplicaKernelBuilder
         string grainType,
         Func<object> grainFactory,
         TimeSpan? collectionAgeLimit,
+        bool preferLocalPlacement,
+        IReadOnlyCollection<string>? interleavableMethods,
         bool isGenerated,
         bool replaceExisting,
         string sourceDescription)
@@ -518,6 +542,8 @@ public sealed class OrleansReplicaKernelBuilder
                 grainType,
                 grainFactory,
                 collectionAgeLimit,
+                preferLocalPlacement,
+                interleavableMethods?.Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.Ordinal).ToArray() ?? [],
                 isGenerated,
                 sourceDescription);
             return;
@@ -548,6 +574,8 @@ public sealed class OrleansReplicaKernelBuilder
                 grainType,
                 grainFactory,
                 collectionAgeLimit,
+                preferLocalPlacement,
+                interleavableMethods?.Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.Ordinal).ToArray() ?? [],
                 isGenerated,
                 sourceDescription));
     }
@@ -692,6 +720,8 @@ public sealed class OrleansReplicaKernelBuilder
         string GrainType,
         Func<object> GrainFactory,
         TimeSpan? CollectionAgeLimit,
+        bool PreferLocalPlacement,
+        IReadOnlyList<string> InterleavableMethods,
         bool IsGenerated,
         string SourceDescription);
 

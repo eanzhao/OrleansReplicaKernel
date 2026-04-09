@@ -1,5 +1,6 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
+using OrleansReplicaKernel.Scheduling;
 
 namespace OrleansReplicaKernel.Runtime;
 
@@ -11,7 +12,11 @@ public sealed class LocalCallbackDirectory : IAsyncDisposable
     public GrainId Register(string nodeName, string callbackType, object implementation)
     {
         var grainId = CallbackTargetIdentity.Create(callbackType, nodeName);
-        var activation = new ActivationEntry(grainId, implementation, ownerVersion: 0);
+        var activation = new ActivationEntry(
+            grainId,
+            implementation,
+            ownerVersion: 0,
+            GrainTypeSchedulingPolicy.Default);
 
         lock (_lock)
         {

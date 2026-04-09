@@ -4,7 +4,7 @@ using OrleansReplicaKernel.Invocation;
 
 namespace OrleansReplicaKernel.Demo;
 
-[GeneratedGrainImplementation("counter", CollectionAgeLimitMilliseconds = 100)]
+[GeneratedGrainImplementation("counter", CollectionAgeLimitMilliseconds = 100, PreferLocalPlacement = true)]
 public sealed partial class CounterGrain
 {
 }
