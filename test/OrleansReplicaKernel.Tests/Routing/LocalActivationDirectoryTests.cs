@@ -76,6 +76,10 @@ public sealed class LocalActivationDirectoryTests
             {
                 ["TestGrain"] = restoredFactory.Create,
             },
+            new Dictionary<string, GrainTypeCollectionPolicy>
+            {
+                ["TestGrain"] = new(null),
+            },
             new LocalCallbackDirectory(),
             checkpoint);
 
@@ -88,11 +92,52 @@ public sealed class LocalActivationDirectoryTests
         Assert.Equal(7, current.OwnerVersion);
     }
 
+    [Fact]
+    public async Task CollectIdleAsync_UsesPerGrainCollectionAgeLimitWhenPresent()
+    {
+        var fastFactory = new TrackingInstanceFactory<PassiveTestGrain>();
+        var slowFactory = new TrackingInstanceFactory<PassiveTestGrain>();
+        await using var directory = new LocalActivationDirectory(
+            new Dictionary<string, Func<object>>
+            {
+                ["FastGrain"] = fastFactory.Create,
+                ["SlowGrain"] = slowFactory.Create,
+            },
+            new Dictionary<string, GrainTypeCollectionPolicy>
+            {
+                ["FastGrain"] = new(TimeSpan.FromMilliseconds(50)),
+                ["SlowGrain"] = new(TimeSpan.FromSeconds(5)),
+            },
+            new LocalCallbackDirectory());
+
+        var initialFast = directory.GetOrCreate(new GrainAddress("node-a", new GrainId("FastGrain", "1"), OwnerVersion: 1));
+        var initialSlow = directory.GetOrCreate(new GrainAddress("node-a", new GrainId("SlowGrain", "1"), OwnerVersion: 1));
+
+        await Task.Delay(TimeSpan.FromMilliseconds(120));
+
+        var collected = await directory.CollectIdleAsync(TimeSpan.FromMilliseconds(300));
+
+        Assert.Equal(1, collected);
+        Assert.Equal(1, fastFactory.CreatedInstances.Count);
+        Assert.Equal(1, slowFactory.CreatedInstances.Count);
+
+        var recreatedFast = directory.GetOrCreate(new GrainAddress("node-a", new GrainId("FastGrain", "1"), OwnerVersion: 1));
+        var reusedSlow = directory.GetOrCreate(new GrainAddress("node-a", new GrainId("SlowGrain", "1"), OwnerVersion: 1));
+
+        Assert.Equal(2, fastFactory.CreatedInstances.Count);
+        Assert.NotSame(initialFast, recreatedFast);
+        Assert.Same(initialSlow, reusedSlow);
+    }
+
     private static LocalActivationDirectory CreateDirectory(TrackingHandoffGrainFactory factory)
         => new(
             new Dictionary<string, Func<object>>
             {
                 ["TestGrain"] = factory.Create,
+            },
+            new Dictionary<string, GrainTypeCollectionPolicy>
+            {
+                ["TestGrain"] = new(null),
             },
             new LocalCallbackDirectory());
 
@@ -118,5 +163,22 @@ public sealed class LocalActivationDirectoryTests
         {
             State = state is int value ? value : 0;
         }
+    }
+
+    private sealed class TrackingInstanceFactory<TInstance>
+        where TInstance : class, new()
+    {
+        public List<TInstance> CreatedInstances { get; } = [];
+
+        public object Create()
+        {
+            var instance = new TInstance();
+            CreatedInstances.Add(instance);
+            return instance;
+        }
+    }
+
+    private sealed class PassiveTestGrain
+    {
     }
 }

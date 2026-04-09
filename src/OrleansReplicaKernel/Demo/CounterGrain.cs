@@ -2,7 +2,7 @@ using OrleansReplicaKernel.App;
 
 namespace OrleansReplicaKernel.Demo;
 
-public sealed class CounterGrain : ICounterGrain
+public sealed partial class CounterGrain : ICounterGrain
 {
     private int _total;
 

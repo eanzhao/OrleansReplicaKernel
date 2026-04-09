@@ -11,6 +11,7 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly Dictionary<string, GrainImplementationRegistration> _grainImplementations = new(StringComparer.Ordinal);
     private readonly Dictionary<Type, GrainReferenceRegistration> _grainReferences = new();
     private readonly Dictionary<Type, ObjectReferenceRegistration> _objectReferenceRegistrations = new();
+    private readonly HashSet<Assembly> _generatedGrainImplementationAssemblies = [];
     private readonly HashSet<Assembly> _generatedGrainReferenceAssemblies = [];
     private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
@@ -31,6 +32,8 @@ public sealed class OrleansReplicaKernelBuilder
         AddGrainImplementation(
             grainType,
             () => grainFactory(),
+            collectionAgeLimit: null,
+            isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
         AddGrainReference(
@@ -52,9 +55,18 @@ public sealed class OrleansReplicaKernelBuilder
         AddGrainImplementation(
             grainType,
             () => grainFactory(),
+            collectionAgeLimit: null,
+            isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
 
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder AddGeneratedGrainImplementationsFromAssembly(Assembly assembly)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        _generatedGrainImplementationAssemblies.Add(assembly);
         return this;
     }
 
@@ -163,6 +175,7 @@ public sealed class OrleansReplicaKernelBuilder
 
     public OrleansReplicaKernelHost Build(string nodeName, params string[] peerNodeNames)
     {
+        RegisterGeneratedGrainImplementations();
         RegisterGeneratedGrainReferences();
         RegisterGeneratedObjectReferences();
 
@@ -173,6 +186,10 @@ public sealed class OrleansReplicaKernelBuilder
         var grainFactories = _grainImplementations.Values.ToDictionary(
             item => item.GrainType,
             item => item.GrainFactory,
+            StringComparer.Ordinal);
+        var grainCollectionPolicies = _grainImplementations.Values.ToDictionary(
+            item => item.GrainType,
+            item => new GrainTypeCollectionPolicy(item.CollectionAgeLimit),
             StringComparer.Ordinal);
 
         InProcessClusterMembership membership;
@@ -282,8 +299,12 @@ public sealed class OrleansReplicaKernelBuilder
             var activationCheckpoint = runtimeCheckpoint?.ActivationDirectories
                 .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));
             var activationDirectory = activationCheckpoint is null
-                ? new LocalActivationDirectory(grainFactories, callbackDirectory)
-                : LocalActivationDirectory.Restore(grainFactories, callbackDirectory, activationCheckpoint);
+                ? new LocalActivationDirectory(grainFactories, grainCollectionPolicies, callbackDirectory)
+                : LocalActivationDirectory.Restore(
+                    grainFactories,
+                    grainCollectionPolicies,
+                    callbackDirectory,
+                    activationCheckpoint);
             var router = new LocalGrainRouter(currentNodeName, locator);
             var runtime = new InProcessRuntime(
                 currentNodeName,
@@ -328,6 +349,42 @@ public sealed class OrleansReplicaKernelBuilder
                 .Concat(callbackDirectories.Values)
                 .ToArray(),
             bindings);
+    }
+
+    private void RegisterGeneratedGrainImplementations()
+    {
+        foreach (var assembly in _generatedGrainImplementationAssemblies)
+        {
+            foreach (var implementationType in GetLoadableTypes(assembly))
+            {
+                if (implementationType is null || !implementationType.IsClass || implementationType.IsAbstract)
+                {
+                    continue;
+                }
+
+                foreach (var attribute in implementationType.GetCustomAttributes<GeneratedGrainImplementationAttribute>())
+                {
+                    ValidateGeneratedGrainImplementation(implementationType, attribute.GrainType);
+
+                    if (_grainImplementations.TryGetValue(attribute.GrainType, out var existingRegistration)
+                        && !existingRegistration.IsGenerated)
+                    {
+                        continue;
+                    }
+
+                    var constructor = implementationType.GetConstructor(Type.EmptyTypes);
+                    var collectionAgeLimit = ResolveCollectionAgeLimit(attribute);
+                    AddGrainImplementation(
+                        attribute.GrainType,
+                        () => constructor!.Invoke([])!,
+                        collectionAgeLimit,
+                        isGenerated: true,
+                        replaceExisting: false,
+                        sourceDescription:
+                        $"generated grain implementation '{implementationType.FullName}' in assembly '{assembly.GetName().Name}'");
+                }
+            }
+        }
     }
 
     private void RegisterGeneratedGrainReferences()
@@ -450,6 +507,8 @@ public sealed class OrleansReplicaKernelBuilder
     private void AddGrainImplementation(
         string grainType,
         Func<object> grainFactory,
+        TimeSpan? collectionAgeLimit,
+        bool isGenerated,
         bool replaceExisting,
         string sourceDescription)
     {
@@ -458,12 +517,27 @@ public sealed class OrleansReplicaKernelBuilder
             _grainImplementations[grainType] = new GrainImplementationRegistration(
                 grainType,
                 grainFactory,
+                collectionAgeLimit,
+                isGenerated,
                 sourceDescription);
             return;
         }
 
         if (_grainImplementations.TryGetValue(grainType, out var existingRegistration))
         {
+            if (existingRegistration.IsGenerated
+                && isGenerated
+                && string.Equals(existingRegistration.SourceDescription, sourceDescription, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (existingRegistration.IsGenerated && isGenerated)
+            {
+                throw new InvalidOperationException(
+                    $"Multiple generated grain implementation registrations were found for '{grainType}': '{existingRegistration.SourceDescription}' and '{sourceDescription}'.");
+            }
+
             throw new InvalidOperationException(
                 $"Grain implementation '{grainType}' is already registered by '{existingRegistration.SourceDescription}'.");
         }
@@ -473,6 +547,8 @@ public sealed class OrleansReplicaKernelBuilder
             new GrainImplementationRegistration(
                 grainType,
                 grainFactory,
+                collectionAgeLimit,
+                isGenerated,
                 sourceDescription));
     }
 
@@ -572,6 +648,34 @@ public sealed class OrleansReplicaKernelBuilder
         }
     }
 
+    private static void ValidateGeneratedGrainImplementation(Type implementationType, string grainType)
+    {
+        if (string.IsNullOrWhiteSpace(grainType))
+        {
+            throw new InvalidOperationException(
+                $"Generated grain implementation '{implementationType.FullName}' must declare a non-empty grain type.");
+        }
+
+        if (implementationType.GetConstructor(Type.EmptyTypes) is null)
+        {
+            throw new InvalidOperationException(
+                $"Generated grain implementation '{implementationType.FullName}' must expose a public parameterless constructor.");
+        }
+    }
+
+    private static TimeSpan? ResolveCollectionAgeLimit(GeneratedGrainImplementationAttribute attribute)
+    {
+        if (attribute.CollectionAgeLimitMilliseconds < -1)
+        {
+            throw new InvalidOperationException(
+                $"Generated grain implementation '{attribute.GrainType}' declares an invalid collection age limit '{attribute.CollectionAgeLimitMilliseconds}'.");
+        }
+
+        return attribute.CollectionAgeLimitMilliseconds >= 0
+            ? TimeSpan.FromMilliseconds(attribute.CollectionAgeLimitMilliseconds)
+            : null;
+    }
+
     private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
     {
         try
@@ -587,6 +691,8 @@ public sealed class OrleansReplicaKernelBuilder
     private sealed record GrainImplementationRegistration(
         string GrainType,
         Func<object> GrainFactory,
+        TimeSpan? CollectionAgeLimit,
+        bool IsGenerated,
         string SourceDescription);
 
     private sealed record GrainReferenceRegistration(

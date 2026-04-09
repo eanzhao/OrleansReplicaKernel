@@ -3,7 +3,7 @@ using OrleansReplicaKernel.Runtime;
 
 namespace OrleansReplicaKernel.Demo;
 
-public sealed class EchoGrain : IEchoGrain, IActivationHandoffParticipant
+public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipant
 {
     private static string? _nextCaptureFailureReason;
     private static string? _nextApplyFailureReason;

@@ -13,6 +13,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     private readonly object _lock = new();
     private readonly LocalCallbackDirectory _callbackDirectory;
     private readonly IReadOnlyDictionary<string, Func<object>> _grainFactories;
+    private readonly IReadOnlyDictionary<string, GrainTypeCollectionPolicy> _grainCollectionPolicies;
     private readonly Dictionary<GrainId, ActivationEntry> _activations = new();
     private readonly Dictionary<GrainId, PendingHandoffState> _pendingHandoffStates = new();
     private readonly Dictionary<GrainId, ActivationMetadataRecord> _recoveredMetadata = new();
@@ -20,17 +21,20 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
     public LocalActivationDirectory(
         IReadOnlyDictionary<string, Func<object>> grainFactories,
+        IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory)
-        : this(grainFactories, callbackDirectory, checkpoint: null)
+        : this(grainFactories, grainCollectionPolicies, callbackDirectory, checkpoint: null)
     {
     }
 
     private LocalActivationDirectory(
         IReadOnlyDictionary<string, Func<object>> grainFactories,
+        IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
         ActivationDirectoryCheckpoint? checkpoint)
     {
         _grainFactories = grainFactories;
+        _grainCollectionPolicies = grainCollectionPolicies;
         _callbackDirectory = callbackDirectory;
 
         if (checkpoint is null)
@@ -283,14 +287,17 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         {
             foreach (var pair in _activations.ToArray())
             {
-                if (!pair.Value.CanCollect(utcNow, idleFor))
+                var effectiveIdleWindow = ResolveIdleWindow(pair.Key.GrainType, idleFor);
+                if (!pair.Value.CanCollect(utcNow, effectiveIdleWindow))
                 {
                     continue;
                 }
 
                 _activations.Remove(pair.Key);
                 collected.Add(pair.Value);
-                TraceLog.Write("directory", $"collect idle activation {pair.Key}");
+                TraceLog.Write(
+                    "directory",
+                    $"collect idle activation {pair.Key} idle-window={effectiveIdleWindow}");
             }
         }
 
@@ -343,9 +350,20 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
     public static LocalActivationDirectory Restore(
         IReadOnlyDictionary<string, Func<object>> grainFactories,
+        IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
         ActivationDirectoryCheckpoint checkpoint)
-        => new(grainFactories, callbackDirectory, checkpoint);
+        => new(grainFactories, grainCollectionPolicies, callbackDirectory, checkpoint);
+
+    private TimeSpan ResolveIdleWindow(string grainType, TimeSpan defaultIdleWindow)
+    {
+        if (_grainCollectionPolicies.TryGetValue(grainType, out var policy))
+        {
+            return policy.ResolveIdleWindow(defaultIdleWindow);
+        }
+
+        return defaultIdleWindow;
+    }
 
     private bool TryRejectStaleRequest(GrainAddress address)
     {

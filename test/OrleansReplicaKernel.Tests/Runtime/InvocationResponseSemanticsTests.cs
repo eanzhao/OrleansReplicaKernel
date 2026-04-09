@@ -187,6 +187,38 @@ public sealed class InvocationResponseSemanticsTests
         Assert.Equal(3, result);
     }
 
+    [Fact]
+    public async Task GeneratedGrainImplementationMetadata_ActivatesGrainWithoutManualImplementationFactory()
+    {
+        await using var host = CreateHost();
+        var echo = host.GetGrain<IEchoGrain>("generated-activator");
+
+        var result = await echo.PingAsync("generated-implementation");
+
+        Assert.Equal("echo:generated-implementation:count=1", result);
+    }
+
+    [Fact]
+    public async Task GeneratedGrainImplementationMetadata_CanOverrideIdleCollectionAgePerGrainType()
+    {
+        await using var host = CreateHost();
+        var echo = host.GetGrain<IEchoGrain>("collection-echo");
+        var counter = host.GetGrain<ICounterGrain>("collection-counter");
+
+        await echo.PingAsync("seed");
+        await counter.AddAsync(3);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(150));
+        var collected = await host.CollectIdleGrainsAsync(TimeSpan.FromMilliseconds(300));
+
+        var echoAfterCollect = await echo.PingAsync("after-collect");
+        var counterAfterCollect = await counter.AddAsync(2);
+
+        Assert.Equal(1, collected);
+        Assert.Equal("echo:after-collect:count=2", echoAfterCollect);
+        Assert.Equal(2, counterAfterCollect);
+    }
+
     private static OrleansReplicaKernelHost CreateHost(params string[] peerNodeNames)
         => CreateHost(TimeProvider.System, TimeSpan.FromMinutes(5), peerNodeNames);
 
@@ -195,15 +227,10 @@ public sealed class InvocationResponseSemanticsTests
         TimeSpan responseHistoryRetention,
         params string[] peerNodeNames)
         => new OrleansReplicaKernelBuilder()
+            .AddGeneratedGrainImplementationsFromAssembly(typeof(EchoGrain).Assembly)
             .WithTimeProvider(timeProvider)
             .WithResponseHistoryRetention(responseHistoryRetention)
             .AddGeneratedGrainReferencesFromAssembly(typeof(EchoGrainReference).Assembly)
             .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
-            .AddGrainImplementation(
-                grainType: "echo",
-                grainFactory: static () => new EchoGrain())
-            .AddGrainImplementation(
-                grainType: "counter",
-                grainFactory: static () => new CounterGrain())
             .Build("dev-node-1", peerNodeNames);
 }

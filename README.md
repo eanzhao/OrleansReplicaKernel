@@ -17,6 +17,8 @@
 - object reference factory registry 已经接进 builder / host / runtime，typed object reference 的创建和目标端重建现在共用一份注册表。
 - generated object reference metadata + builder 级 assembly scan 已经接上，当前这批 generated object reference 不再需要在应用入口逐个手工 `AddObjectReference<T>()`。
 - generated grain reference metadata + builder 级 assembly scan 也已经接上，`GetGrain<T>()` 用到的 contract binding 现在可以从生成代码自动恢复，不再手工逐个写 reference factory。
+- generated grain implementation metadata + builder 级 assembly scan 也已经接上，当前 demo 里这批 `grainType -> activator factory` 不再需要手工逐个 `AddGrainImplementation(...)`。
+- generated grain implementation metadata 已经开始影响运行时行为了：不同 grain type 现在可以带不同的 idle collection age，而不是所有 activation 只吃一个全局回收窗口。
 - membership 的早期主链已经有了：
   `probe -> failure detector -> authoritative membership -> gossip dissemination -> local membership view -> stabilization`
 - partial fanout 和 anti-entropy 这两类 dissemination 行为已经有最小实现。
@@ -24,7 +26,7 @@
 - grain directory checkpoint 和 activation metadata recovery 已经有最小恢复闭环。
 - initial placement、load-aware rebalancing、owner handoff 已经有最小实现。
 - warm handoff、capture/apply fallback、quiescence/drain 这些 handoff 关键边界已经做了第一版。
-- idle collection 已经能回收 activation，并验证 metadata 不会被误当成活实例。
+- idle collection 已经能按 grain type 的 collection age 回收 activation，并验证 metadata 不会被误当成活实例。
 - `docs/` 下面已经整理出一套从 Orleans 源码分析到复刻路线的文档主线。
 
 ## 仓库结构
@@ -51,7 +53,7 @@
 - 真正的 placement 策略体系、跨节点负载统计、正式的 rebalancing/handoff 协议还没做完整。
 - 真正的 state storage provider、persistent state、事务、streaming、reminder、timer、provider 生态都还没进入实现阶段。
 - 真正的 client、gateway、序列化运行时、代码生成器、application part、provider 装配体系还没接到当前内核里。
-- 真正完整的 grain metadata manifest 还没做完；现在 grain activation 侧的实现注册还是手工的，只是 contract -> generated reference 这层已经自动化了。
+- 真正完整的 grain metadata manifest 还没做完；现在只是把 grain reference binding、grain activator discovery、grain collection age 这几层推进到了 generated metadata + assembly scan，这还不是完整的 grain property / lifecycle / placement manifest。
 - 真正完整的 object reference / observer 序列化协议、跨进程 rehydration、callback 与 client/gateway 的正式接线还没做完。
 - 真正完整的 application part / metadata manifest / 多程序集自动发现体系还没接进来；现在的 object reference 自动发现还只是先补到 builder + assembly scan 这一层。
 - 真正的故障恢复、节点重启恢复、rolling upgrade、兼容性和版本演进都还没有正式实现。

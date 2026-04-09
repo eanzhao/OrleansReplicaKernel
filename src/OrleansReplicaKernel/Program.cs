@@ -261,10 +261,10 @@ try
     TraceLog.Write("result", $"echo-drain-in-flight = {inFlightDrainTurn.Result}");
     TraceLog.Write("result", $"echo-drain-after-handoff = {drainAfterHandoff}");
 
-    TraceLog.Write("app", "wait for counter to become idle");
+    TraceLog.Write("app", "wait for counter to become idle; echo keeps a longer per-grain collection age");
     await Task.Delay(TimeSpan.FromMilliseconds(150));
 
-    var collectedIdle = await host.CollectIdleGrainsAsync(TimeSpan.FromMilliseconds(100));
+    var collectedIdle = await host.CollectIdleGrainsAsync(TimeSpan.FromMilliseconds(300));
 
     Console.WriteLine();
     TraceLog.Write("result", $"idle-collected = {collectedIdle}");
@@ -272,6 +272,7 @@ try
     Console.WriteLine();
     LogActivationMetadata("activation-metadata-after-idle-collect");
 
+    var echoAfterIdleCollect = await echoAfterRestart.PingAsync("after-idle-collect");
     var counterAfterIdleCollect = await recoveredCounter.AddAsync(2);
 
     Console.WriteLine();
@@ -305,6 +306,7 @@ try
     TraceLog.Write("result", $"echo-fallback-after-failed-capture = {fallbackAfterCaptureFailure}");
     TraceLog.Write("result", $"echo-drain-in-flight = {inFlightDrainTurn.Result}");
     TraceLog.Write("result", $"echo-drain-after-handoff = {drainAfterHandoff}");
+    TraceLog.Write("result", $"echo-after-idle-collect = {echoAfterIdleCollect}");
     TraceLog.Write("result", $"counter-after-idle-collect = {counterAfterIdleCollect}");
 }
 finally
@@ -315,17 +317,12 @@ finally
 OrleansReplicaKernelHost CreateHost(OrleansReplicaKernelRuntimeCheckpoint? checkpoint = null)
 {
     var builder = new OrleansReplicaKernelBuilder()
+        .AddGeneratedGrainImplementationsFromAssembly(typeof(EchoGrain).Assembly)
         .WithMembershipStabilizationWindow(stabilizationWindow)
         .WithMembershipGossipFanout(gossipFanout)
         .WithMembershipAntiEntropyInterval(antiEntropyInterval)
         .AddGeneratedGrainReferencesFromAssembly(typeof(EchoGrainReference).Assembly)
-        .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
-        .AddGrainImplementation(
-            grainType: "echo",
-            grainFactory: static () => new EchoGrain())
-        .AddGrainImplementation(
-            grainType: "counter",
-            grainFactory: static () => new CounterGrain());
+        .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly);
 
     if (checkpoint is not null)
     {
