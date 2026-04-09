@@ -119,7 +119,7 @@ public sealed class ActivationSchedulerTests
         var second = scheduler.EnqueueAsync(
             "interleavable",
             allowInterleaving: true,
-            requestChainId: DefaultChainId,
+            requestChainId: OtherChainId,
             async _ =>
             {
                 interleavableStarted.TrySetResult(true);

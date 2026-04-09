@@ -7,7 +7,7 @@ using OrleansReplicaKernel.Scheduling;
 
 namespace OrleansReplicaKernel.Runtime;
 
-public sealed class ActivationEntry : IAsyncDisposable
+public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
 {
     private const int ActiveState = 0;
     private const int QuiescingState = 1;
@@ -15,8 +15,10 @@ public sealed class ActivationEntry : IAsyncDisposable
 
     private readonly object _instance;
     private readonly object _quiesceLock = new();
+    private readonly object _timerLock = new();
     private readonly ActivationScheduler _scheduler;
     private readonly GrainTypeSchedulingPolicy _schedulingPolicy;
+    private readonly Dictionary<Guid, ActivationTimerRegistration> _timers = new();
     private long _lastTouchedUtcTicks;
     private int _lifecycleState;
     private int _pendingInvocationCount;
@@ -72,27 +74,7 @@ public sealed class ActivationEntry : IAsyncDisposable
         IInvocationRuntime runtime,
         CancellationToken cancellationToken)
     {
-        while (true)
-        {
-            if (Volatile.Read(ref _lifecycleState) != ActiveState)
-            {
-                throw new ActivationQuiescingException(GrainId);
-            }
-
-            Interlocked.Increment(ref _pendingInvocationCount);
-            if (Volatile.Read(ref _lifecycleState) == ActiveState)
-            {
-                break;
-            }
-
-            if (Interlocked.Decrement(ref _pendingInvocationCount) == 0)
-            {
-                SignalQuiescedIfNeeded();
-            }
-
-            throw new ActivationQuiescingException(GrainId);
-        }
-
+        EnterActiveTurn();
         Touch();
 
         try
@@ -106,6 +88,7 @@ public sealed class ActivationEntry : IAsyncDisposable
                     runtime,
                     GrainId,
                     message.RequestChainId,
+                    this,
                     async () =>
                     {
                         TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");
@@ -115,12 +98,50 @@ public sealed class ActivationEntry : IAsyncDisposable
         }
         finally
         {
-            Touch();
-            if (Interlocked.Decrement(ref _pendingInvocationCount) == 0)
-            {
-                SignalQuiescedIfNeeded();
-            }
+            ExitActiveTurn();
         }
+    }
+
+    public ValueTask<IActivationTimerHandle> RegisterTimerAsync(
+        string timerName,
+        TimeSpan dueTime,
+        TimeSpan? period,
+        Func<CancellationToken, ValueTask> callback)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(timerName);
+        ArgumentNullException.ThrowIfNull(callback);
+
+        if (dueTime < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(dueTime), "Timer due time must be non-negative.");
+        }
+
+        if (period is not null && period <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(period), "Timer period must be positive when provided.");
+        }
+
+        var runtime = ActivationExecutionContext.CurrentRuntime
+            ?? throw new InvalidOperationException("Activation timer registration requires an active invocation runtime.");
+
+        var timerId = Guid.NewGuid();
+        var timer = new ActivationTimerRegistration(
+            timerId,
+            timerName,
+            dueTime,
+            period,
+            cancellationToken => FireTimerAsync(timerName, runtime, callback, cancellationToken),
+            RemoveTimer);
+
+        lock (_timerLock)
+        {
+            _timers.Add(timerId, timer);
+        }
+
+        TraceLog.Write(
+            "timer",
+            $"register {timerName} on {GrainId} due={dueTime}{(period is null ? string.Empty : $" period={period}")}");
+        return ValueTask.FromResult<IActivationTimerHandle>(timer);
     }
 
     public async ValueTask QuiesceAsync()
@@ -150,6 +171,19 @@ public sealed class ActivationEntry : IAsyncDisposable
     {
         Interlocked.Exchange(ref _lifecycleState, DisposedState);
         TraceLog.Write("activation", $"deactivate {GrainId}");
+
+        List<ActivationTimerRegistration> timers;
+        lock (_timerLock)
+        {
+            timers = _timers.Values.ToList();
+            _timers.Clear();
+        }
+
+        foreach (var timer in timers)
+        {
+            await timer.DisposeAsync();
+        }
+
         await _scheduler.DisposeAsync();
 
         switch (_instance)
@@ -245,6 +279,98 @@ public sealed class ActivationEntry : IAsyncDisposable
             {
                 _quiescedCompletion?.TrySetResult(true);
             }
+        }
+    }
+
+    private void EnterActiveTurn()
+    {
+        while (true)
+        {
+            if (Volatile.Read(ref _lifecycleState) != ActiveState)
+            {
+                throw new ActivationQuiescingException(GrainId);
+            }
+
+            Interlocked.Increment(ref _pendingInvocationCount);
+            if (Volatile.Read(ref _lifecycleState) == ActiveState)
+            {
+                return;
+            }
+
+            if (Interlocked.Decrement(ref _pendingInvocationCount) == 0)
+            {
+                SignalQuiescedIfNeeded();
+            }
+
+            throw new ActivationQuiescingException(GrainId);
+        }
+    }
+
+    private void ExitActiveTurn()
+    {
+        Touch();
+        if (Interlocked.Decrement(ref _pendingInvocationCount) == 0)
+        {
+            SignalQuiescedIfNeeded();
+        }
+    }
+
+    private async ValueTask FireTimerAsync(
+        string timerName,
+        IInvocationRuntime runtime,
+        Func<CancellationToken, ValueTask> callback,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            EnterActiveTurn();
+        }
+        catch (ActivationQuiescingException)
+        {
+            TraceLog.Write("timer", $"skip {timerName} on {GrainId}: activation is quiescing");
+            return;
+        }
+
+        var requestChainId = Guid.NewGuid();
+        Touch();
+
+        try
+        {
+            await _scheduler.EnqueueAsync(
+                $"$timer.{timerName}",
+                allowInterleaving: false,
+                requestChainId,
+                async _ =>
+                {
+                    await ActivationExecutionContext.RunAsync(
+                        runtime,
+                        GrainId,
+                        requestChainId,
+                        this,
+                        async () =>
+                        {
+                            TraceLog.Write("timer", $"fire {timerName} on {GrainId} chain={requestChainId:N}");
+                            await callback(cancellationToken);
+                            return (object?)null;
+                        });
+                    return null;
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            ExitActiveTurn();
+        }
+    }
+
+    private void RemoveTimer(Guid timerId)
+    {
+        lock (_timerLock)
+        {
+            _timers.Remove(timerId);
         }
     }
 

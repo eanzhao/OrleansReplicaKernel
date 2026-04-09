@@ -149,6 +149,52 @@ try
     TraceLog.Write("result", $"echo-callback-messages = {callbackMessages}");
     TraceLog.Write("result", $"echo-callback-after-dispose = {callbackAfterDispose}");
 
+    var reentrantCallbackEcho = host.GetGrain<IEchoGrain>("callback-reentrant");
+    var reentrantObserver = new ReentrantCallbackEchoObserver(reentrantCallbackEcho);
+    await using var reentrantCallbackLease = host.CreateObjectReference<IEchoObserver>(
+        callbackType: "echo-observer",
+        implementation: reentrantObserver);
+
+    Console.WriteLine();
+    TraceLog.Write(
+        "app",
+        "move callback-reentrant owner to remote node dev-node-2, then let the callback target reenter the original grain on the same request chain");
+    await host.SetOwnerAsync<IEchoGrain>("callback-reentrant", "dev-node-2");
+    var reentrantCallbackResult = await reentrantCallbackEcho.PingWithObserverAsync(
+        "callback-reentrant",
+        reentrantCallbackLease.Handle);
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-callback-reentrant-result = {reentrantCallbackResult}");
+    TraceLog.Write("result", $"echo-callback-reentrant-observed = {reentrantObserver.DescribeObserved()}");
+    TraceLog.Write("result", $"echo-callback-reentrant-nested = {reentrantObserver.DescribeNestedResults()}");
+
+    var timerEcho = host.GetGrain<IEchoGrain>("timer-hold");
+    Console.WriteLine();
+    TraceLog.Write(
+        "app",
+        "arm an activation-owned timer during an exclusive turn; the timer callback should wait behind the active turn instead of bypassing it");
+    var timerHoldResult = await timerEcho.HoldTurnWithTimerAsync("during-hold", holdDelayMs: 150, timerDelayMs: 30);
+    await Task.Delay(100);
+    var timerSnapshot = await timerEcho.GetTimerSnapshotAsync();
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-timer-hold-result = {timerHoldResult}");
+    TraceLog.Write("result", $"echo-timer-snapshot = {timerSnapshot}");
+
+    var timerDeactivateEcho = host.GetGrain<IEchoGrain>("timer-deactivate");
+    Console.WriteLine();
+    TraceLog.Write(
+        "app",
+        "arm an activation-owned timer, then deactivate the grain before it fires; the timer should be cancelled with the activation");
+    await timerDeactivateEcho.ArmOneShotTimerAsync("cancelled", 80);
+    await host.DeactivateGrainAsync<IEchoGrain>("timer-deactivate");
+    await Task.Delay(140);
+    var timerAfterDeactivate = await host.GetGrain<IEchoGrain>("timer-deactivate").GetTimerSnapshotAsync();
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-timer-after-deactivate = {timerAfterDeactivate}");
+
     host.FailNextProbe("dev-node-2", "heartbeat miss #1");
     await host.RunProbeTickAsync();
     LogDeliveries("fanout-1", host.RunGossipTick());
@@ -324,6 +370,12 @@ try
     TraceLog.Write("result", $"echo-callback-result = {callbackResult}");
     TraceLog.Write("result", $"echo-callback-messages = {callbackMessages}");
     TraceLog.Write("result", $"echo-callback-after-dispose = {callbackAfterDispose}");
+    TraceLog.Write("result", $"echo-callback-reentrant-result = {reentrantCallbackResult}");
+    TraceLog.Write("result", $"echo-callback-reentrant-observed = {reentrantObserver.DescribeObserved()}");
+    TraceLog.Write("result", $"echo-callback-reentrant-nested = {reentrantObserver.DescribeNestedResults()}");
+    TraceLog.Write("result", $"echo-timer-hold-result = {timerHoldResult}");
+    TraceLog.Write("result", $"echo-timer-snapshot = {timerSnapshot}");
+    TraceLog.Write("result", $"echo-timer-after-deactivate = {timerAfterDeactivate}");
     TraceLog.Write("result", $"response-disposition-after-runtime-checkpoint[dev-node-1] = {host.DescribeResponseDisposition("dev-node-1")}");
     TraceLog.Write("result", $"counter-before-runtime-checkpoint-first = {counterBeforeCheckpointFirst}");
     TraceLog.Write("result", $"counter-before-runtime-checkpoint-second = {counterBeforeCheckpointSecond}");

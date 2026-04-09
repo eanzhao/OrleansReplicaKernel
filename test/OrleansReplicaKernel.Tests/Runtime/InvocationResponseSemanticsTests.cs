@@ -166,6 +166,55 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task RemoteObserverCallback_CanReenterOriginatingGrainViaSameRequestChain()
+    {
+        await using var host = CreateHost("dev-node-1", "dev-node-2");
+        var grain = host.GetGrain<IEchoGrain>("callback-reentrant");
+        var observer = new ReentrantCallbackEchoObserver(grain);
+        await using var callbackLease = host.CreateObjectReference<IEchoObserver>(
+            callbackType: "echo-observer",
+            implementation: observer);
+
+        await host.SetOwnerAsync<IEchoGrain>("callback-reentrant", "dev-node-2");
+
+        var result = await grain.PingWithObserverAsync("callback-reentrant", callbackLease.Handle)
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal("echo:callback-reentrant:count=2", result);
+        Assert.Equal(["observer:callback-reentrant:count=1"], observer.Snapshot());
+        Assert.Equal(["echo:callback-reenter:count=2"], observer.NestedResults());
+    }
+
+    [Fact]
+    public async Task ActivationOwnedTimer_DoesNotBypassActiveExclusiveTurn()
+    {
+        await using var host = CreateHost();
+        var grain = host.GetGrain<IEchoGrain>("timer-hold");
+
+        var holdResult = await grain.HoldTurnWithTimerAsync("during-hold", holdDelayMs: 150, timerDelayMs: 30);
+        await Task.Delay(100);
+        var timerSnapshot = await grain.GetTimerSnapshotAsync();
+
+        Assert.Equal("hold:during-hold:count=1", holdResult);
+        Assert.Equal("timer:during-hold:count=2", timerSnapshot);
+    }
+
+    [Fact]
+    public async Task DeactivatingActivation_CancelsOwnedTimers()
+    {
+        await using var host = CreateHost();
+        var grain = host.GetGrain<IEchoGrain>("timer-deactivate");
+
+        await grain.ArmOneShotTimerAsync("cancelled", 80);
+        await host.DeactivateGrainAsync<IEchoGrain>("timer-deactivate");
+        await Task.Delay(140);
+
+        var afterDeactivate = await host.GetGrain<IEchoGrain>("timer-deactivate").GetTimerSnapshotAsync();
+
+        Assert.Equal("<none>", afterDeactivate);
+    }
+
+    [Fact]
     public async Task RawObserverImplementation_CannotCrossInvocationBoundary_WithoutReferenceSerialization()
     {
         await using var host = CreateHost("dev-node-1", "dev-node-2");

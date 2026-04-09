@@ -7,6 +7,7 @@ public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipan
 {
     private static string? _nextCaptureFailureReason;
     private static string? _nextApplyFailureReason;
+    private readonly List<string> _timerEvents = [];
     private int _callCount;
 
     public static void FailNextWarmHandoffCapture(string reason)
@@ -67,6 +68,53 @@ public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipan
         return await self.ReentrantSelfCallAsync(remaining - 1, cancellationToken);
     }
 
+    public async Task ArmOneShotTimerAsync(string timerName, int delayMs, CancellationToken cancellationToken = default)
+    {
+        var timerRegistry = ActivationExecutionContext.CurrentTimerRegistry
+            ?? throw new InvalidOperationException("No activation timer registry is available for timer registration.");
+
+        await timerRegistry.RegisterTimerAsync(
+            timerName,
+            TimeSpan.FromMilliseconds(delayMs),
+            period: null,
+            _ => OnTimerAsync(timerName));
+        TraceLog.Write("grain", $"EchoGrain arm one-shot timer \"{timerName}\" delay={delayMs}ms");
+    }
+
+    public async Task<string> HoldTurnWithTimerAsync(
+        string timerName,
+        int holdDelayMs,
+        int timerDelayMs,
+        CancellationToken cancellationToken = default)
+    {
+        _callCount++;
+        TraceLog.Write(
+            "grain",
+            $"EchoGrain begin HoldTurnWithTimerAsync(\"{timerName}\") hold={holdDelayMs}ms timer={timerDelayMs}ms count={_callCount}");
+
+        var timerRegistry = ActivationExecutionContext.CurrentTimerRegistry
+            ?? throw new InvalidOperationException("No activation timer registry is available for timer registration.");
+
+        await timerRegistry.RegisterTimerAsync(
+            timerName,
+            TimeSpan.FromMilliseconds(timerDelayMs),
+            period: null,
+            _ => OnTimerAsync(timerName));
+
+        await Task.Delay(holdDelayMs, cancellationToken);
+        TraceLog.Write("grain", $"EchoGrain end HoldTurnWithTimerAsync(\"{timerName}\") count={_callCount}");
+        return $"hold:{timerName}:count={_callCount}";
+    }
+
+    public Task<string> GetTimerSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        var snapshot = _timerEvents.Count == 0
+            ? "<none>"
+            : string.Join(", ", _timerEvents);
+        TraceLog.Write("grain", $"EchoGrain timer snapshot {snapshot}");
+        return Task.FromResult(snapshot);
+    }
+
     public object CaptureHandoffState()
     {
         var failureReason = Interlocked.Exchange(ref _nextCaptureFailureReason, null);
@@ -97,4 +145,13 @@ public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipan
     }
 
     private sealed record EchoHandoffState(int CallCount);
+
+    private ValueTask OnTimerAsync(string timerName)
+    {
+        _callCount++;
+        var value = $"timer:{timerName}:count={_callCount}";
+        _timerEvents.Add(value);
+        TraceLog.Write("timer", $"EchoGrain timer \"{timerName}\" fire count={_callCount}");
+        return ValueTask.CompletedTask;
+    }
 }

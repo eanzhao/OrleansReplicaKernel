@@ -13,14 +13,17 @@ public static class ActivationExecutionContext
 
     public static GrainId? CurrentGrainId => CurrentStateSlot.Value?.GrainId;
 
+    public static IActivationTimerRegistry? CurrentTimerRegistry => CurrentStateSlot.Value?.TimerRegistry;
+
     public static async ValueTask<T> RunAsync<T>(
         IInvocationRuntime runtime,
         GrainId grainId,
         Guid requestChainId,
+        IActivationTimerRegistry timerRegistry,
         Func<ValueTask<T>> callback)
     {
         var previousState = CurrentStateSlot.Value;
-        CurrentStateSlot.Value = new ExecutionState(runtime, grainId, requestChainId);
+        CurrentStateSlot.Value = new ExecutionState(runtime, grainId, requestChainId, timerRegistry);
 
         try
         {
@@ -35,5 +38,6 @@ public static class ActivationExecutionContext
     private sealed record ExecutionState(
         IInvocationRuntime Runtime,
         GrainId GrainId,
-        Guid RequestChainId);
+        Guid RequestChainId,
+        IActivationTimerRegistry TimerRegistry);
 }

@@ -12,4 +12,14 @@ public interface IEchoGrain
         CancellationToken cancellationToken = default);
 
     Task<int> ReentrantSelfCallAsync(int remaining, CancellationToken cancellationToken = default);
+
+    Task ArmOneShotTimerAsync(string timerName, int delayMs, CancellationToken cancellationToken = default);
+
+    Task<string> HoldTurnWithTimerAsync(
+        string timerName,
+        int holdDelayMs,
+        int timerDelayMs,
+        CancellationToken cancellationToken = default);
+
+    Task<string> GetTimerSnapshotAsync(CancellationToken cancellationToken = default);
 }

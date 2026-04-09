@@ -33,4 +33,26 @@ public sealed partial class EchoGrainReference : IEchoGrain
         var invokable = new EchoReentrantSelfCallInvokable(remaining);
         return _runtime.InvokeAsync<int>(_grainId, invokable, cancellationToken).AsTask();
     }
+
+    public Task ArmOneShotTimerAsync(string timerName, int delayMs, CancellationToken cancellationToken = default)
+    {
+        var invokable = new EchoArmOneShotTimerInvokable(timerName, delayMs);
+        return _runtime.InvokeAsync<object?>(_grainId, invokable, cancellationToken).AsTask();
+    }
+
+    public Task<string> HoldTurnWithTimerAsync(
+        string timerName,
+        int holdDelayMs,
+        int timerDelayMs,
+        CancellationToken cancellationToken = default)
+    {
+        var invokable = new EchoHoldTurnWithTimerInvokable(timerName, holdDelayMs, timerDelayMs);
+        return _runtime.InvokeAsync<string>(_grainId, invokable, cancellationToken).AsTask();
+    }
+
+    public Task<string> GetTimerSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        var invokable = new EchoGetTimerSnapshotInvokable();
+        return _runtime.InvokeAsync<string>(_grainId, invokable, cancellationToken).AsTask();
+    }
 }
