@@ -10,4 +10,6 @@ public interface IEchoGrain
         string text,
         IEchoObserver observer,
         CancellationToken cancellationToken = default);
+
+    Task<int> ReentrantSelfCallAsync(int remaining, CancellationToken cancellationToken = default);
 }

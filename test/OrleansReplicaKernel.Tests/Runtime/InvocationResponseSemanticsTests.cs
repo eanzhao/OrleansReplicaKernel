@@ -261,6 +261,17 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task SameCallChain_CanReenterExclusiveActivation()
+    {
+        await using var host = CreateHost();
+        var echo = host.GetGrain<IEchoGrain>("reentrant-self");
+
+        var result = await echo.ReentrantSelfCallAsync(2);
+
+        Assert.Equal(3, result);
+    }
+
+    [Fact]
     public async Task NonInterleavableMethod_StillWaitsBehindInterleavableTurn()
     {
         await using var host = CreateHost();

@@ -10,9 +10,11 @@ public sealed class ActivationScheduler : IAsyncDisposable
     private readonly Channel<WorkItem> _queue = Channel.CreateUnbounded<WorkItem>();
     private readonly Task _reader;
     private readonly TaskCompletionSource<bool> _drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private Guid? _exclusiveRequestChainId;
     private bool _exclusiveTurnActive;
     private bool _inputCompleted;
     private int _activeTurnCount;
+    private int _exclusiveTurnCount;
 
     public ActivationScheduler(string activationName)
     {
@@ -25,6 +27,7 @@ public sealed class ActivationScheduler : IAsyncDisposable
     public async ValueTask<object?> EnqueueAsync(
         string operationName,
         bool allowInterleaving,
+        Guid requestChainId,
         Func<CancellationToken, ValueTask<object?>> callback,
         CancellationToken cancellationToken)
     {
@@ -32,11 +35,11 @@ public sealed class ActivationScheduler : IAsyncDisposable
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         await _queue.Writer.WriteAsync(
-            new WorkItem(operationName, allowInterleaving, callback, completion),
+            new WorkItem(operationName, allowInterleaving, requestChainId, callback, completion),
             cancellationToken);
         TraceLog.Write(
             "scheduler",
-            $"enqueue {operationName} on {ActivationName} mode={(allowInterleaving ? "interleavable" : "exclusive")}");
+            $"enqueue {operationName} on {ActivationName} mode={(allowInterleaving ? "interleavable" : "exclusive")} chain={requestChainId:N}");
 
         return await completion.Task.WaitAsync(cancellationToken);
     }
@@ -47,8 +50,15 @@ public sealed class ActivationScheduler : IAsyncDisposable
         {
             lock (_lock)
             {
-                _pending.Enqueue(item);
-                TryDispatchPendingUnsafe();
+                if (CanDispatchReentrantUnsafe(item))
+                {
+                    DispatchReentrantUnsafe(item);
+                }
+                else
+                {
+                    _pending.Enqueue(item);
+                    TryDispatchPendingUnsafe();
+                }
             }
         }
 
@@ -77,9 +87,7 @@ public sealed class ActivationScheduler : IAsyncDisposable
                 }
 
                 _pending.Dequeue();
-                _exclusiveTurnActive = true;
-                _activeTurnCount++;
-                Dispatch(next);
+                DispatchExclusiveUnsafe(next);
                 return;
             }
 
@@ -87,6 +95,34 @@ public sealed class ActivationScheduler : IAsyncDisposable
             _activeTurnCount++;
             Dispatch(next);
         }
+    }
+
+    private bool CanDispatchReentrantUnsafe(WorkItem item)
+        => _exclusiveTurnActive
+           && _exclusiveRequestChainId is { } activeChainId
+           && activeChainId == item.RequestChainId;
+
+    private void DispatchReentrantUnsafe(WorkItem item)
+    {
+        _activeTurnCount++;
+        if (!item.AllowInterleaving)
+        {
+            _exclusiveTurnCount++;
+        }
+
+        TraceLog.Write(
+            "scheduler",
+            $"reenter {item.OperationName} on {ActivationName} chain={item.RequestChainId:N}");
+        Dispatch(item);
+    }
+
+    private void DispatchExclusiveUnsafe(WorkItem item)
+    {
+        _exclusiveTurnActive = true;
+        _exclusiveRequestChainId = item.RequestChainId;
+        _exclusiveTurnCount = 1;
+        _activeTurnCount++;
+        Dispatch(item);
     }
 
     private void Dispatch(WorkItem item)
@@ -97,12 +133,12 @@ public sealed class ActivationScheduler : IAsyncDisposable
             {
                 TraceLog.Write(
                     "scheduler",
-                    $"begin turn {item.OperationName} on {ActivationName} mode={(item.AllowInterleaving ? "interleavable" : "exclusive")}");
+                    $"begin turn {item.OperationName} on {ActivationName} mode={(item.AllowInterleaving ? "interleavable" : "exclusive")} chain={item.RequestChainId:N}");
                 var result = await item.Callback(CancellationToken.None);
                 item.Completion.TrySetResult(result);
                 TraceLog.Write(
                     "scheduler",
-                    $"end turn {item.OperationName} on {ActivationName} mode={(item.AllowInterleaving ? "interleavable" : "exclusive")}");
+                    $"end turn {item.OperationName} on {ActivationName} mode={(item.AllowInterleaving ? "interleavable" : "exclusive")} chain={item.RequestChainId:N}");
             }
             catch (Exception exception)
             {
@@ -113,9 +149,14 @@ public sealed class ActivationScheduler : IAsyncDisposable
                 lock (_lock)
                 {
                     _activeTurnCount--;
-                    if (!item.AllowInterleaving)
+                    if (!item.AllowInterleaving && _exclusiveTurnActive && _exclusiveRequestChainId == item.RequestChainId)
                     {
-                        _exclusiveTurnActive = false;
+                        _exclusiveTurnCount--;
+                        if (_exclusiveTurnCount == 0)
+                        {
+                            _exclusiveTurnActive = false;
+                            _exclusiveRequestChainId = null;
+                        }
                     }
 
                     TryDispatchPendingUnsafe();
@@ -143,6 +184,7 @@ public sealed class ActivationScheduler : IAsyncDisposable
     private sealed record WorkItem(
         string OperationName,
         bool AllowInterleaving,
+        Guid RequestChainId,
         Func<CancellationToken, ValueTask<object?>> Callback,
         TaskCompletionSource<object?> Completion);
 }

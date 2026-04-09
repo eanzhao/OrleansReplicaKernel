@@ -27,4 +27,10 @@ public sealed partial class EchoGrainReference : IEchoGrain
         var invokable = new EchoPingWithObserverInvokable(text, observer);
         return _runtime.InvokeAsync<string>(_grainId, invokable, cancellationToken).AsTask();
     }
+
+    public Task<int> ReentrantSelfCallAsync(int remaining, CancellationToken cancellationToken = default)
+    {
+        var invokable = new EchoReentrantSelfCallInvokable(remaining);
+        return _runtime.InvokeAsync<int>(_grainId, invokable, cancellationToken).AsTask();
+    }
 }

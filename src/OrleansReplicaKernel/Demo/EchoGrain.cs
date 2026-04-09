@@ -49,6 +49,24 @@ public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipan
         return $"echo:{text}:count={_callCount}";
     }
 
+    public async Task<int> ReentrantSelfCallAsync(int remaining, CancellationToken cancellationToken = default)
+    {
+        _callCount++;
+        TraceLog.Write("grain", $"EchoGrain handle ReentrantSelfCallAsync(remaining={remaining}) count={_callCount}");
+
+        if (remaining <= 0)
+        {
+            return _callCount;
+        }
+
+        var runtime = ActivationExecutionContext.CurrentRuntime
+            ?? throw new InvalidOperationException("No activation runtime is available for reentrant self-call.");
+        var grainId = ActivationExecutionContext.CurrentGrainId
+            ?? throw new InvalidOperationException("No current grain identity is available for reentrant self-call.");
+        var self = new EchoGrainReference(runtime, grainId);
+        return await self.ReentrantSelfCallAsync(remaining - 1, cancellationToken);
+    }
+
     public object CaptureHandoffState()
     {
         var failureReason = Interlocked.Exchange(ref _nextCaptureFailureReason, null);

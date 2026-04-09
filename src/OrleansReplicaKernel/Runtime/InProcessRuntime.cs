@@ -326,6 +326,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
     {
         var message = new InvocationMessage(
             requestId,
+            ActivationExecutionContext.CurrentRequestChainId ?? requestId,
             attemptId,
             attemptSequence,
             NodeName,

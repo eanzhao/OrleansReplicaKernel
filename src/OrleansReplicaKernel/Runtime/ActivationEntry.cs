@@ -101,8 +101,11 @@ public sealed class ActivationEntry : IAsyncDisposable
             return await _scheduler.EnqueueAsync(
                 $"{message.Invokable.InterfaceName}.{message.Invokable.MethodName}",
                 allowInterleaving,
+                message.RequestChainId,
                 turnToken => ActivationExecutionContext.RunAsync(
                     runtime,
+                    GrainId,
+                    message.RequestChainId,
                     async () =>
                     {
                         TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");

@@ -21,6 +21,7 @@
 - generated grain implementation metadata 已经开始影响运行时行为了：不同 grain type 现在可以带不同的 idle collection age，而不是所有 activation 只吃一个全局回收窗口。
 - generated grain implementation metadata 现在也可以给 initial placement 提 hint 了：没有 hint 的 grain 继续按 least-loaded 走，有 prefer-local hint 的 grain 会优先落到本地 healthy node。
 - generated grain implementation metadata 现在也可以给调度层提 hint 了：当前已经支持把指定方法标成 interleavable turn，同一个 activation 里这些方法可以并发重叠执行，其他方法仍然保持独占 turn。
+- request-chain reentrancy 已经有第一版最小实现了：同一条逻辑调用链里打回同一个 activation 的请求，现在可以重入当前独占 turn，不再因为“自己等自己”卡死。
 - membership 的早期主链已经有了：
   `probe -> failure detector -> authoritative membership -> gossip dissemination -> local membership view -> stabilization`
 - partial fanout 和 anti-entropy 这两类 dissemination 行为已经有最小实现。
@@ -56,6 +57,7 @@
 - 真正的 state storage provider、persistent state、事务、streaming、reminder、timer、provider 生态都还没进入实现阶段。
 - 真正的 client、gateway、序列化运行时、代码生成器、application part、provider 装配体系还没接到当前内核里。
 - 真正完整的 grain metadata manifest 还没做完；现在只是把 grain reference binding、grain activator discovery、grain collection age、placement hint、方法级 interleaving hint 这几层推进到了 generated metadata + assembly scan，这还不是完整的 grain property / lifecycle / placement manifest。
+- 真正完整的 reentrancy / interleaving 模型还没做完；现在只有 request-chain reentrancy 的第一版和方法级 interleaving hint，还没有 Orleans 那套完整的 call-chain、callback、timer、observer、system target 调度语义。
 - 真正完整的 object reference / observer 序列化协议、跨进程 rehydration、callback 与 client/gateway 的正式接线还没做完。
 - 真正完整的 application part / metadata manifest / 多程序集自动发现体系还没接进来；现在的 object reference 自动发现还只是先补到 builder + assembly scan 这一层。
 - 真正的故障恢复、节点重启恢复、rolling upgrade、兼容性和版本演进都还没有正式实现。
@@ -138,11 +140,12 @@ checkpoint 在当前实现里扮演的角色也刻意收得很窄：
 13. 再新建一个 `fresh-placement` grain，确认没有特殊 hint 的 grain 会继续按 least-loaded 放到更空的 `dev-node-3`
 14. 再新建一个带 prefer-local hint 的 `counter/prefer-local-placement`，确认它会优先留在本地 healthy node，而不是跟着 least-loaded 走
 15. 再跑一条 `echo/interleaving`，连续发两个 `PingSlowAsync`，确认 generated grain metadata 已经能把指定方法放进 interleavable turn，整体耗时会明显小于串行两次相加
-16. 然后对 `echo/alpha` 跑一次 `RebalanceGrainAsync`，确认 rebalancing 只做决策，handoff 才真的切 owner；而且因为 `EchoGrain` 支持 warm handoff，计数会跟着一起迁过去
-17. 再单独跑一条 `echo/fallback`，分别注入一次 apply 失败和 capture 失败，确认系统都会自动退回 cold path
-18. 再跑一条 `echo/drain`，先发一个慢调用，再在它还没结束时 handoff，确认旧 turn 会先 drain 完，再切 owner
-19. 再调 `counter` 时，你会看到先命中“恢复出来的 activation metadata”，但真实实例仍然是新建的，所以计数不会延续到 checkpoint 前的值
-20. 最后再用 idle collection 验证不同 grain type 可以吃不同的 collection age：`counter` 会先被收掉，`echo` 会继续活着；同时 activation metadata 也不会被错误地当成活实例
+16. 再跑一条 `echo/reentrant-self`，让同一个 grain 在一条逻辑调用链里回调自己，确认 request-chain reentrancy 已经能让独占 turn 安全重入，不会卡死
+17. 然后对 `echo/alpha` 跑一次 `RebalanceGrainAsync`，确认 rebalancing 只做决策，handoff 才真的切 owner；而且因为 `EchoGrain` 支持 warm handoff，计数会跟着一起迁过去
+18. 再单独跑一条 `echo/fallback`，分别注入一次 apply 失败和 capture 失败，确认系统都会自动退回 cold path
+19. 再跑一条 `echo/drain`，先发一个慢调用，再在它还没结束时 handoff，确认旧 turn 会先 drain 完，再切 owner
+20. 再调 `counter` 时，你会看到先命中“恢复出来的 activation metadata”，但真实实例仍然是新建的，所以计数不会延续到 checkpoint 前的值
+21. 最后再用 idle collection 验证不同 grain type 可以吃不同的 collection age：`counter` 会先被收掉，`echo` 会继续活着；同时 activation metadata 也不会被错误地当成活实例
 
 ## 运行
 

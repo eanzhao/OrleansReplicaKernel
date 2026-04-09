@@ -239,6 +239,16 @@ try
     TraceLog.Write("result", $"echo-interleave-b = {interleavingResults[1]}");
     TraceLog.Write("result", $"echo-interleave-elapsed-ms = {interleavingStopwatch.ElapsedMilliseconds}");
 
+    var reentrantEcho = host.GetGrain<IEchoGrain>("reentrant-self");
+    Console.WriteLine();
+    TraceLog.Write(
+        "app",
+        "run a same-grain self-call chain; request-chain reentrancy should let an exclusive activation call back into itself without deadlocking");
+    var reentrantSelfResult = await reentrantEcho.ReentrantSelfCallAsync(2);
+
+    Console.WriteLine();
+    TraceLog.Write("result", $"echo-reentrant-self = {reentrantSelfResult}");
+
     TraceLog.Write("app", "rebalance echo/alpha and carry warm handoff state into the new activation");
     var handoffPerformed = await host.RebalanceGrainAsync<IEchoGrain>("alpha");
     var alphaAfterHandoff = await echoAfterRestart.PingAsync("after-handoff");
@@ -324,6 +334,7 @@ try
     TraceLog.Write("result", $"echo-interleave-a = {interleavingResults[0]}");
     TraceLog.Write("result", $"echo-interleave-b = {interleavingResults[1]}");
     TraceLog.Write("result", $"echo-interleave-elapsed-ms = {interleavingStopwatch.ElapsedMilliseconds}");
+    TraceLog.Write("result", $"echo-reentrant-self = {reentrantSelfResult}");
     TraceLog.Write("result", $"handoff-alpha = {handoffPerformed}");
     TraceLog.Write("result", $"echo-alpha-after-handoff = {alphaAfterHandoff}");
     TraceLog.Write("result", $"echo-fallback-seed = {fallbackSeed}");
