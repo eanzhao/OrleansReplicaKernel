@@ -134,6 +134,56 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
     public TimeSpan GetElapsedTime(long startingTimestamp, long endingTimestamp) =>
         TimeProvider.GetElapsedTime(startingTimestamp, endingTimestamp);
 
+    public async Task<T> WaitForAsync<T>(
+        Func<ValueTask<T>> probe,
+        Func<T, bool> predicate,
+        TimeSpan timeout,
+        TimeSpan? delayBetweenProbes = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(probe);
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        if (timeout < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Wait timeout must be non-negative.");
+        }
+
+        if (delayBetweenProbes is { } delay && delay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(delayBetweenProbes),
+                "Delay between probes must be non-negative.");
+        }
+
+        var startedAt = GetTimestamp();
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var value = await probe();
+            if (predicate(value))
+            {
+                return value;
+            }
+
+            if (GetElapsedTime(startedAt) >= timeout)
+            {
+                throw new TimeoutException("Timed out waiting for the expected host condition.");
+            }
+
+            if (delayBetweenProbes is { } probeDelay && probeDelay > TimeSpan.Zero)
+            {
+                await DelayAsync(probeDelay, cancellationToken);
+            }
+            else
+            {
+                await Task.Yield();
+            }
+        }
+    }
+
     public async ValueTask<bool> DeactivateGrainAsync<TContract>(string key)
         where TContract : class
     {

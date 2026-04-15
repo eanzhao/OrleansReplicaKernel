@@ -58,11 +58,11 @@ public sealed class InvocationResponseSemanticsTests
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(100));
 
-        var dispositions = await WaitForAsync(
-            static state => Task.FromResult(state.GetResponseDispositionSnapshot("dev-node-1")),
-            static snapshot => snapshot.LateResponses == 1,
-            host,
-            TimeSpan.FromSeconds(1));
+        var dispositions = await host.WaitForAsync(
+                probe: () => ValueTask.FromResult(host.GetResponseDispositionSnapshot("dev-node-1")),
+                predicate: static snapshot => snapshot.LateResponses == 1,
+                timeout: TimeSpan.FromSeconds(1))
+            .WaitAsync(TimeSpan.FromSeconds(1));
         var afterTimeout = await grain.PingAsync("after-timeout");
 
         Assert.Equal("echo:seed:count=1", seed);
@@ -102,6 +102,48 @@ public sealed class InvocationResponseSemanticsTests
 
         Assert.True(timeout.IsCancellationRequested);
         Assert.Equal(TimeSpan.FromMilliseconds(130), host.GetElapsedTime(startedAt));
+    }
+
+    [Fact]
+    public async Task HostWaitForAsync_UsesConfiguredTimeProvider()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(timeProvider, TimeSpan.FromMinutes(5));
+        var gate = false;
+
+        var waitTask = host.WaitForAsync(
+            probe: () => ValueTask.FromResult(gate),
+            predicate: static value => value,
+            timeout: TimeSpan.FromMilliseconds(80));
+
+        await Task.Delay(20);
+        Assert.False(waitTask.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(79));
+        await Task.Delay(20);
+        Assert.False(waitTask.IsCompleted);
+
+        gate = true;
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+
+        await waitTask.WaitAsync(TimeSpan.FromSeconds(1));
+
+        gate = false;
+        var timedOutWait = host.WaitForAsync(
+            probe: () => ValueTask.FromResult(gate),
+            predicate: static value => value,
+            timeout: TimeSpan.FromMilliseconds(50));
+
+        await Task.Delay(20);
+        Assert.False(timedOutWait.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(49));
+        await Task.Delay(20);
+        Assert.False(timedOutWait.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+
+        await Assert.ThrowsAsync<TimeoutException>(async () => await timedOutWait.WaitAsync(TimeSpan.FromSeconds(1)));
     }
 
     [Fact]
@@ -378,11 +420,11 @@ public sealed class InvocationResponseSemanticsTests
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
 
         var holdResult = await holdCall.WaitAsync(TimeSpan.FromSeconds(1));
-        var timerSnapshot = await WaitForAsync(
-            static async state => await state.GetTimerSnapshotAsync(),
-            static snapshot => snapshot == "timer:manual-hold:count=2",
-            grain,
-            TimeSpan.FromSeconds(1));
+        var timerSnapshot = await host.WaitForAsync(
+                probe: () => new ValueTask<string>(grain.GetTimerSnapshotAsync()),
+                predicate: static snapshot => snapshot == "timer:manual-hold:count=2",
+                timeout: TimeSpan.FromSeconds(1))
+            .WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal("hold:manual-hold:count=1", holdResult);
         Assert.Equal("timer:manual-hold:count=2", timerSnapshot);
@@ -404,11 +446,11 @@ public sealed class InvocationResponseSemanticsTests
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
 
-        var snapshot = await WaitForAsync(
-            static async state => await state.GetTimerSnapshotAsync(),
-            static snapshot => snapshot == "timer:manual:count=1",
-            grain,
-            TimeSpan.FromSeconds(1));
+        var snapshot = await host.WaitForAsync(
+                probe: () => new ValueTask<string>(grain.GetTimerSnapshotAsync()),
+                predicate: static current => current == "timer:manual:count=1",
+                timeout: TimeSpan.FromSeconds(1))
+            .WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal("timer:manual:count=1", snapshot);
     }
@@ -566,29 +608,4 @@ public sealed class InvocationResponseSemanticsTests
             .AddGeneratedGrainReferencesFromAssembly(typeof(EchoGrainReference).Assembly)
             .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
             .Build("dev-node-1", peerNodeNames);
-
-    private static async Task<T> WaitForAsync<T, TState>(
-        Func<TState, Task<T>> probe,
-        Func<T, bool> predicate,
-        TState state,
-        TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-
-        while (true)
-        {
-            var value = await probe(state);
-            if (predicate(value))
-            {
-                return value;
-            }
-
-            if (DateTimeOffset.UtcNow >= deadline)
-            {
-                throw new TimeoutException("Timed out waiting for the expected test condition.");
-            }
-
-            await Task.Delay(10);
-        }
-    }
 }

@@ -44,8 +44,8 @@
 │   ├── Runtime/      # 运行时核心：调用执行、传输层、Membership、故障检测
 │   ├── Demo/         # 示例 Grain 和模拟生成代码
 │   └── Program.cs    # 端到端演示入口
-├── test/             # 单元测试（58 个）
-└── docs/             # 完整文档（78 篇，见 docs/README.md）
+├── test/             # 单元测试（59 个）
+└── docs/             # 完整文档（79 篇，见 docs/README.md）
 ```
 
 ---
@@ -101,7 +101,7 @@ Response 回传（去重 / 超时丢弃 / Stale 过滤）→ 返回结果
 | **Handoff** | Warm Handoff capture/apply；Quiescence/Drain；失败自动退回 Cold Path |
 | **回调** | Observer 模式；跨节点回调；Object Reference Rehydrate |
 | **Timer** | Activation 级 Timer；不越过独占 Turn；随 Activation 取消；Activation 本地时间开始统一到 TimeProvider |
-| **宿主** | Host 暴露当前 TimeProvider；提供 provider-aware delay/timeout/elapsed helper；demo orchestration 开始共享同一时间语义 |
+| **宿主** | Host 暴露当前 TimeProvider；提供 provider-aware delay/timeout/elapsed/wait helper；demo orchestration 开始共享同一时间语义 |
 | **元数据** | 生成 Attribute + 程序集扫描，自动发现 Grain 实现/引用/对象引用 |
 | **恢复** | Runtime Checkpoint 导出/恢复 Membership + Directory + Activation 元数据 |
 | **回收** | 按 Grain 类型配置不同的空闲回收时间 |
@@ -161,10 +161,10 @@ dotnet test
 
 ## 文档导航
 
-项目有 78 篇文档，分两大类：
+项目有 79 篇文档，分两大类：
 
 1. **Orleans 源码分析**（01-37）：逐模块拆解 Orleans 的实现，理解它为什么这么设计
-2. **复刻设计文档**（38-78）：每个子系统在新架构下应该怎么实现
+2. **复刻设计文档**（38-79）：每个子系统在新架构下应该怎么实现
 
 详细的阅读指南和分类索引见 [docs/README.md](docs/README.md)。
 
