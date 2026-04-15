@@ -128,6 +128,67 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task TransportInjectedRequestDelay_UsesConfiguredTimeProvider()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(
+            timeProvider,
+            TimeSpan.FromMinutes(5),
+            "dev-node-1",
+            "dev-node-2");
+        var grain = host.GetGrain<IEchoGrain>("transport-delay");
+
+        await host.SetOwnerAsync<IEchoGrain>("transport-delay", "dev-node-2");
+        host.DelayNextRequest("dev-node-2", TimeSpan.FromMilliseconds(80));
+
+        var delayedCall = grain.PingAsync("delayed");
+
+        await Task.Delay(20);
+        Assert.False(delayedCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(79));
+        await Task.Delay(20);
+        Assert.False(delayedCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+
+        var result = await delayedCall.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal("echo:delayed:count=1", result);
+    }
+
+    [Fact]
+    public async Task ResponseDeliveryRetryDelay_UsesConfiguredTimeProvider()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(
+            timeProvider,
+            TimeSpan.FromMinutes(5),
+            "dev-node-1",
+            "dev-node-2");
+        var grain = host.GetGrain<IEchoGrain>("retry-delay");
+
+        await host.SetOwnerAsync<IEchoGrain>("retry-delay", "dev-node-2");
+        await grain.PingAsync("seed");
+
+        host.DropNextResponse("dev-node-2", "drop and retry under manual time");
+        var retriedCall = grain.PingAsync("after-drop");
+
+        await Task.Delay(20);
+        Assert.False(retriedCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(24));
+        await Task.Delay(20);
+        Assert.False(retriedCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+
+        var result = await retriedCall.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal("echo:after-drop:count=2", result);
+    }
+
+    [Fact]
     public async Task RemoteGrain_CanInvokeRegisteredCallbackTarget_OnSourceNode()
     {
         await using var host = CreateHost("dev-node-1", "dev-node-2");

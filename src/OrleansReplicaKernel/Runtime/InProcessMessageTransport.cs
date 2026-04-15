@@ -7,13 +7,16 @@ public sealed class InProcessMessageTransport : IMessageTransport
 {
     private readonly IClusterMembershipView _membershipView;
     private readonly InProcessNodeRegistry _nodeRegistry;
+    private readonly TimeProvider _timeProvider;
 
     public InProcessMessageTransport(
         IClusterMembershipView membershipView,
-        InProcessNodeRegistry nodeRegistry)
+        InProcessNodeRegistry nodeRegistry,
+        TimeProvider? timeProvider = null)
     {
         _membershipView = membershipView;
         _nodeRegistry = nodeRegistry;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async ValueTask SendAsync(
@@ -32,7 +35,7 @@ public sealed class InProcessMessageTransport : IMessageTransport
             TraceLog.Write(
                 "transport",
                 $"delay request {message.RequestId:N} to {message.Target.NodeName} by {delay}");
-            await Task.Delay(delay, CancellationToken.None);
+            await Task.Delay(delay, _timeProvider, CancellationToken.None);
         }
 
         TraceLog.Write(
@@ -66,7 +69,8 @@ public sealed class InProcessMessageTransport : IMessageTransport
                     dispatch.ResponseReceiver,
                     response,
                     replayDelay,
-                    "replay dropped");
+                    "replay dropped",
+                    _timeProvider);
             }
 
             TraceLog.Write(
@@ -87,7 +91,8 @@ public sealed class InProcessMessageTransport : IMessageTransport
                 dispatch.ResponseReceiver,
                 response,
                 duplicateDelay,
-                "duplicate");
+                "duplicate",
+                _timeProvider);
         }
     }
 
@@ -95,7 +100,8 @@ public sealed class InProcessMessageTransport : IMessageTransport
         IResponseReceiver responseReceiver,
         InvocationResponseMessage response,
         TimeSpan delay,
-        string mode)
+        string mode,
+        TimeProvider timeProvider)
     {
         _ = Task.Run(
             async () =>
@@ -104,7 +110,7 @@ public sealed class InProcessMessageTransport : IMessageTransport
                 {
                     if (delay > TimeSpan.Zero)
                     {
-                        await Task.Delay(delay, CancellationToken.None);
+                        await Task.Delay(delay, timeProvider, CancellationToken.None);
                     }
 
                     TraceLog.Write(

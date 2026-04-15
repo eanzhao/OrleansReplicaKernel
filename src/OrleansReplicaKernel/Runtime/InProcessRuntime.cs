@@ -117,7 +117,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
                             "retry",
                             $"activation quiescing for {grainId} via {routedMessage.Target.NodeName}, invalidate and retry request {requestId:N}");
                         _locator.Invalidate(grainId);
-                        await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken);
+                        await Task.Delay(TimeSpan.FromMilliseconds(25), _timeProvider, cancellationToken);
                         continue;
                     }
 
@@ -185,7 +185,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
                 TraceLog.Write(
                     "retry",
                     $"response delivery failed for {grainId} via {exception.NodeName}: {exception.Reason}; retry request {requestId:N}");
-                await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken);
+                await Task.Delay(TimeSpan.FromMilliseconds(25), _timeProvider, cancellationToken);
             }
             catch
             {

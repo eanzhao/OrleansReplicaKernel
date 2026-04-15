@@ -1,9 +1,9 @@
 # 文档导航
 
-本目录包含 73 篇文档，分两个阶段：
+本目录包含 74 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
-- **阶段二（38-73）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
+- **阶段二（38-74）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
 
 ---
 
@@ -73,6 +73,7 @@
 | 56 | [响应超时、取消与迟到丢弃](56-response-completion-timeouts-cancellation-and-late-response-discard.md) | 调用端：超时和迟到响应怎么处理 |
 | 57 | [响应排序与重复处理](57-response-ordering-stale-suppression-and-duplicate-handling.md) | 响应分类：正常、迟到、过期、重复 |
 | 58 | [响应历史与关联回收](58-response-history-retention-and-correlation-eviction.md) | 请求/响应历史的保留窗口和清理策略 |
+| 74 | [Transport 与 Retry TimeProvider 收敛](74-transport-and-retry-timeprovider-convergence.md) | transport 注入延迟和 retry backoff 开始共享统一时间源 |
 
 ### 二、调度与并发
 
@@ -179,6 +180,7 @@
 | 71 | [Activation 级 Timer](71-activation-owned-timers-and-timer-turn-classification.md) | Timer 归属 Activation，随 Activation 销毁而取消 |
 | 72 | [Activation TimeProvider 收敛](72-activation-timeprovider-convergence-and-controlled-time-validation.md) | Activation 本地时间语义统一：Timer、LastTouchedUtc、Idle Collect 都用同一个 TimeProvider |
 | 73 | [Membership TimeProvider 收敛](73-membership-timeprovider-convergence-and-deterministic-view-change-timestamps.md) | Membership View Change 时间戳开始共享统一时间源 |
+| 74 | [Transport 与 Retry TimeProvider 收敛](74-transport-and-retry-timeprovider-convergence.md) | request/response 控制路径上的 delay 开始共享统一时间源 |
 
 ### 九、生命周期与回收
 
@@ -362,3 +364,4 @@
 | 71 | Activation 级 Timer | 设计 |
 | 72 | Activation TimeProvider 收敛 | 设计 |
 | 73 | Membership TimeProvider 收敛 | 设计 |
+| 74 | Transport 与 Retry TimeProvider 收敛 | 设计 |

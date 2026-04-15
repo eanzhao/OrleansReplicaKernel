@@ -356,7 +356,7 @@ public sealed class OrleansReplicaKernelBuilder
 
         foreach (var currentNodeName in allNodeNames)
         {
-            var transport = new InProcessMessageTransport(membershipViews[currentNodeName], nodeRegistry);
+            var transport = new InProcessMessageTransport(membershipViews[currentNodeName], nodeRegistry, _timeProvider);
             var locator = new DirectoryGrainLocator(grainDirectory);
             var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
             var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
