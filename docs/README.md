@@ -1,9 +1,9 @@
 # 文档导航
 
-本目录包含 81 篇文档，分两个阶段：
+本目录包含 82 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
-- **阶段二（38-81）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
+- **阶段二（38-82）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
 
 ---
 
@@ -80,6 +80,7 @@
 | 79 | [Host Provider-Aware Wait](79-host-provider-aware-wait-and-condition-polling.md) | host 提供 provider-aware 的条件等待 helper，收拢调用侧轮询/观察逻辑 |
 | 80 | [Program 观察等待收敛](80-program-observation-waits-and-semantic-condition-sync.md) | demo 开始用语义化 wait 代替固定 observation sleep |
 | 81 | [Scheduler 测试同步去固定睡眠](81-scheduler-test-synchronization-without-fixed-sleeps.md) | ActivationScheduler 顺序测试开始用 dispatch opportunity 断言代替固定睡眠 |
+| 82 | [共享测试同步 Helper](82-shared-test-synchronization-helper-and-manual-time-progress.md) | test harness 开始用共享 helper 统一 dispatch/progress 同步，而不是散落的短睡眠 |
 
 ### 二、调度与并发
 
@@ -195,6 +196,7 @@
 | 79 | [Host Provider-Aware Wait](79-host-provider-aware-wait-and-condition-polling.md) | host 开始提供 provider-aware 的 wait/poll helper，统一条件等待语义 |
 | 80 | [Program 观察等待收敛](80-program-observation-waits-and-semantic-condition-sync.md) | demo 里的 observation wait 开始基于语义条件同步，而不是固定睡眠 |
 | 81 | [Scheduler 测试同步去固定睡眠](81-scheduler-test-synchronization-without-fixed-sleeps.md) | scheduler 顺序测试开始脱离固定 sleep-driven 验证 |
+| 82 | [共享测试同步 Helper](82-shared-test-synchronization-helper-and-manual-time-progress.md) | manual-time 与 scheduler tests 开始共享 dispatch/progress 同步 helper |
 
 ### 九、生命周期与回收
 
@@ -386,3 +388,4 @@
 | 79 | Host Provider-Aware Wait | 设计 |
 | 80 | Program 观察等待收敛 | 设计 |
 | 81 | Scheduler 测试同步去固定睡眠 | 设计 |
+| 82 | 共享测试同步 Helper | 设计 |

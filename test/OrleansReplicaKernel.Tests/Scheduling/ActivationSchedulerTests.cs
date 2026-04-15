@@ -1,4 +1,5 @@
 using OrleansReplicaKernel.Scheduling;
+using OrleansReplicaKernel.Tests.TestSupport;
 
 namespace OrleansReplicaKernel.Tests.Scheduling;
 
@@ -84,7 +85,7 @@ public sealed class ActivationSchedulerTests
             },
             CancellationToken.None).AsTask();
 
-        await YieldForDispatchAsync();
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(exclusiveStarted.Task.IsCompleted);
 
         interleavableRelease.TrySetResult(true);
@@ -128,7 +129,7 @@ public sealed class ActivationSchedulerTests
             },
             CancellationToken.None).AsTask();
 
-        await YieldForDispatchAsync();
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(interleavableStarted.Task.IsCompleted);
 
         exclusiveRelease.TrySetResult(true);
@@ -214,20 +215,12 @@ public sealed class ActivationSchedulerTests
             },
             CancellationToken.None).AsTask();
 
-        await YieldForDispatchAsync();
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(innerStarted.Task.IsCompleted);
 
         outerRelease.TrySetResult(true);
         await innerStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var results = await Task.WhenAll(outer, inner);
         Assert.Equal(["outer", "inner"], results);
-    }
-
-    private static async Task YieldForDispatchAsync()
-    {
-        for (var iteration = 0; iteration < 8; iteration++)
-        {
-            await Task.Yield();
-        }
     }
 }

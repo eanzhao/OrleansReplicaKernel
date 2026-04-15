@@ -44,11 +44,11 @@ public sealed class InvocationResponseSemanticsTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50), host.TimeProvider);
         var slowCall = grain.PingSlowAsync("slow", 150, timeout.Token);
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(slowCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(49));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(slowCall.IsCompleted);
 
         var timedOut = Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await slowCall);
@@ -81,11 +81,11 @@ public sealed class InvocationResponseSemanticsTests
         var startedAt = host.GetTimestamp();
         var delay = host.DelayAsync(TimeSpan.FromMilliseconds(80));
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(delay.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(79));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(delay.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
@@ -98,7 +98,7 @@ public sealed class InvocationResponseSemanticsTests
         Assert.False(timeout.IsCancellationRequested);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
 
         Assert.True(timeout.IsCancellationRequested);
         Assert.Equal(TimeSpan.FromMilliseconds(130), host.GetElapsedTime(startedAt));
@@ -116,11 +116,11 @@ public sealed class InvocationResponseSemanticsTests
             predicate: static value => value,
             timeout: TimeSpan.FromMilliseconds(80));
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(waitTask.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(79));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(waitTask.IsCompleted);
 
         gate = true;
@@ -134,11 +134,11 @@ public sealed class InvocationResponseSemanticsTests
             predicate: static value => value,
             timeout: TimeSpan.FromMilliseconds(50));
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(timedOutWait.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(49));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(timedOutWait.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
@@ -159,17 +159,17 @@ public sealed class InvocationResponseSemanticsTests
             timeout: TimeSpan.FromMilliseconds(80),
             delayBetweenProbes: TimeSpan.FromMilliseconds(20));
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(waitTask.IsCompleted);
         Assert.Equal(1, attempts);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(19));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(waitTask.IsCompleted);
         Assert.Equal(1, attempts);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(waitTask.IsCompleted);
         Assert.Equal(2, attempts);
 
@@ -290,11 +290,11 @@ public sealed class InvocationResponseSemanticsTests
 
         var delayedCall = grain.PingAsync("delayed");
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(delayedCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(79));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(delayedCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
@@ -321,11 +321,11 @@ public sealed class InvocationResponseSemanticsTests
         host.DropNextResponse("dev-node-2", "drop and retry under manual time");
         var retriedCall = grain.PingAsync("after-drop");
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(retriedCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(24));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(retriedCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
@@ -416,11 +416,11 @@ public sealed class InvocationResponseSemanticsTests
 
         var slowCall = grain.PingSlowAsync("manual-slow", 80);
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(slowCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(79));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(slowCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
@@ -439,15 +439,15 @@ public sealed class InvocationResponseSemanticsTests
 
         var holdCall = grain.HoldTurnWithTimerAsync("manual-hold", holdDelayMs: 80, timerDelayMs: 20);
 
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(holdCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(20));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(holdCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(59));
-        await Task.Delay(20);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(holdCall.IsCompleted);
 
         timeProvider.Advance(TimeSpan.FromMilliseconds(1));
