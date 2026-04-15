@@ -1,6 +1,6 @@
 # 文档导航
 
-本目录包含 88 篇文档，分两个阶段：
+本目录包含 91 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
 - **阶段二（38-84）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
@@ -87,6 +87,9 @@
 | 86 | [Gossiped Membership Restore Stabilization 采用受控时间](86-gossiped-membership-restore-stabilization-controlled-time.md) | restore 之后的 membership stabilization tick 开始直接验证 configured provider 语义 |
 | 87 | [Restored Membership Gossiper 的 Fanout 与 Stabilization 连续性](87-restored-membership-gossiper-fanout-and-stabilization-continuity.md) | restored gossiper 开始直接验证 lagging fanout 与 pending stabilization 的组合连续性 |
 | 88 | [Runtime Checkpoint 恢复后的 Membership Dissemination 连续性](88-runtime-checkpoint-membership-dissemination-continuity.md) | host 级 runtime checkpoint restore 开始直接验证 membership dissemination/stabilization continuity |
+| 89 | [Membership Checkpoint 恢复后的连续性与非 Runtime Rehydrate 语义](89-membership-checkpoint-restore-continuity-without-runtime-rehydration.md) | host 级 membership-only checkpoint restore 开始直接验证 dissemination continuity 和非 runtime rehydrate 边界 |
+| 90 | [Runtime Checkpoint 恢复 Runtime Metadata，但不恢复 Activation 内存状态](90-runtime-checkpoint-restores-runtime-metadata-but-not-activation-memory.md) | host 级 runtime checkpoint restore 开始直接验证 runtime metadata continuity 和 fresh-instance activation 语义 |
+| 91 | [Runtime Checkpoint 保留 Owner Assignment，但不保留 Activation 内存状态](91-runtime-checkpoint-preserves-owner-assignment-but-not-activation-state.md) | host 级 runtime checkpoint restore 开始直接验证多节点 owner continuity 和 fresh-instance activation 边界 |
 
 ### 二、调度与并发
 
@@ -209,6 +212,9 @@
 | 86 | [Gossiped Membership Restore Stabilization 采用受控时间](86-gossiped-membership-restore-stabilization-controlled-time.md) | gossiped membership view restore 后的 stabilization tick 开始验证 controlled time 语义 |
 | 87 | [Restored Membership Gossiper 的 Fanout 与 Stabilization 连续性](87-restored-membership-gossiper-fanout-and-stabilization-continuity.md) | restored membership gossiper 开始验证 fanout cursor continuity 和 pending stabilization 的协同行为 |
 | 88 | [Runtime Checkpoint 恢复后的 Membership Dissemination 连续性](88-runtime-checkpoint-membership-dissemination-continuity.md) | host/runtime-checkpoint restore 开始直接验证 membership dissemination 与 pending stabilization 的连续性 |
+| 89 | [Membership Checkpoint 恢复后的连续性与非 Runtime Rehydrate 语义](89-membership-checkpoint-restore-continuity-without-runtime-rehydration.md) | host/membership-checkpoint restore 开始验证 dissemination continuity 与不恢复 runtime state 的当前边界 |
+| 90 | [Runtime Checkpoint 恢复 Runtime Metadata，但不恢复 Activation 内存状态](90-runtime-checkpoint-restores-runtime-metadata-but-not-activation-memory.md) | host/runtime-checkpoint restore 开始验证 runtime metadata continuity 与 activation 仍按 fresh-instance 语义重建 |
+| 91 | [Runtime Checkpoint 保留 Owner Assignment，但不保留 Activation 内存状态](91-runtime-checkpoint-preserves-owner-assignment-but-not-activation-state.md) | host/runtime-checkpoint restore 开始验证 handoff 后的 owner continuity 与 activation 仍按 fresh-instance 语义重建 |
 
 ### 九、生命周期与回收
 
@@ -407,3 +413,6 @@
 | 86 | Gossiped Membership Restore Stabilization 采用受控时间 | 设计 |
 | 87 | Restored Membership Gossiper 的 Fanout 与 Stabilization 连续性 | 设计 |
 | 88 | Runtime Checkpoint 恢复后的 Membership Dissemination 连续性 | 设计 |
+| 89 | Membership Checkpoint 恢复后的连续性与非 Runtime Rehydrate 语义 | 设计 |
+| 90 | Runtime Checkpoint 恢复 Runtime Metadata，但不恢复 Activation 内存状态 | 设计 |
+| 91 | Runtime Checkpoint 保留 Owner Assignment，但不保留 Activation 内存状态 | 设计 |
