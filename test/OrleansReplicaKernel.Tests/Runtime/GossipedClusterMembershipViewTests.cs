@@ -60,4 +60,40 @@ public sealed class GossipedClusterMembershipViewTests
         Assert.Equal(3, restored.CurrentEpoch);
         Assert.Equal(view.GetMembers(), restored.GetMembers());
     }
+
+    [Fact]
+    public void Restore_UsesConfiguredTimeProviderForStabilizationTick()
+    {
+        var originalTimeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 08, 0, 0, 0, TimeSpan.Zero));
+        var view = new GossipedClusterMembershipView("observer-a", TimeSpan.FromSeconds(5), originalTimeProvider);
+
+        view.ApplyGossip(
+            [
+                new MembershipViewChange(1, "node-a", null, NodeHealthStatus.Healthy, "register", originalTimeProvider.GetUtcNow()),
+            ]);
+
+        originalTimeProvider.Advance(TimeSpan.FromSeconds(1));
+        view.ApplyGossip(
+            [
+                new MembershipViewChange(2, "node-a", NodeHealthStatus.Healthy, NodeHealthStatus.Suspect, "probe timeout", originalTimeProvider.GetUtcNow()),
+            ]);
+
+        var restoredTimeProvider = new ManualTimeProvider(originalTimeProvider.GetUtcNow());
+        var restored = GossipedClusterMembershipView.Restore(
+            view.ExportCheckpoint(),
+            TimeSpan.FromSeconds(5),
+            restoredTimeProvider);
+
+        restoredTimeProvider.Advance(TimeSpan.FromSeconds(4));
+        var beforeWindow = restored.RunStabilizationTick();
+
+        Assert.Equal(0, beforeWindow.StabilizedNodes);
+        Assert.Equal(NodeHealthStatus.Healthy, restored.GetHealth("node-a"));
+
+        restoredTimeProvider.Advance(TimeSpan.FromSeconds(1));
+        var afterWindow = restored.RunStabilizationTick();
+
+        Assert.Equal(1, afterWindow.StabilizedNodes);
+        Assert.Equal(NodeHealthStatus.Suspect, restored.GetHealth("node-a"));
+    }
 }

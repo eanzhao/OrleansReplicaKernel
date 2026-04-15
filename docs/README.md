@@ -1,6 +1,6 @@
 # 文档导航
 
-本目录包含 85 篇文档，分两个阶段：
+本目录包含 86 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
 - **阶段二（38-84）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
@@ -84,6 +84,7 @@
 | 83 | [Invocation 测试采用 Host Timing API](83-invocation-tests-adopt-host-timing-and-semantic-observation.md) | runtime tests 开始直接走 host timing/wait helper，而不是局部 sleep/stopwatch |
 | 84 | [Handoff Capture 测试采用受控时间](84-handoff-capture-tests-adopt-controlled-time.md) | routing/handoff tests 开始验证 capture timestamp 共享同一 TimeProvider |
 | 85 | [Invocation Timeout 测试采用 Host Timeout Helper](85-invocation-timeout-tests-adopt-host-timeout-helper.md) | invocation timeout tests 不再直接 new timeout source，也不再显式钉死默认系统时间 |
+| 86 | [Gossiped Membership Restore Stabilization 采用受控时间](86-gossiped-membership-restore-stabilization-controlled-time.md) | restore 之后的 membership stabilization tick 开始直接验证 configured provider 语义 |
 
 ### 二、调度与并发
 
@@ -203,6 +204,7 @@
 | 83 | [Invocation 测试采用 Host Timing API](83-invocation-tests-adopt-host-timing-and-semantic-observation.md) | non-manual invocation tests 开始用 host timing/wait helper 收口观察等待 |
 | 84 | [Handoff Capture 测试采用受控时间](84-handoff-capture-tests-adopt-controlled-time.md) | local activation directory tests 开始对 warm handoff capture 时间做 deterministic 验证 |
 | 85 | [Invocation Timeout 测试采用 Host Timeout Helper](85-invocation-timeout-tests-adopt-host-timeout-helper.md) | invocation caller-timeout tests 开始统一走 host timeout helper 和默认 host 时间边界 |
+| 86 | [Gossiped Membership Restore Stabilization 采用受控时间](86-gossiped-membership-restore-stabilization-controlled-time.md) | gossiped membership view restore 后的 stabilization tick 开始验证 controlled time 语义 |
 
 ### 九、生命周期与回收
 
@@ -398,3 +400,4 @@
 | 83 | Invocation 测试采用 Host Timing API | 设计 |
 | 84 | Handoff Capture 测试采用受控时间 | 设计 |
 | 85 | Invocation Timeout 测试采用 Host Timeout Helper | 设计 |
+| 86 | Gossiped Membership Restore Stabilization 采用受控时间 | 设计 |
