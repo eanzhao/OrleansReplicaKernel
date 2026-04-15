@@ -63,14 +63,75 @@ public sealed class InProcessMembershipGossiperTests
         Assert.Equal(NodeHealthStatus.Suspect, views["observer-b"].GetHealth("node-b"));
     }
 
+    [Fact]
+    public void Gossip_Restore_ContinuesFanoutAndStabilizationUsingConfiguredTimeProvider()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        var membership = new InProcessClusterMembership(timeProvider);
+        membership.Register("node-a");
+        membership.Register("node-b");
+
+        var views = CreateViews(timeProvider, TimeSpan.FromSeconds(5), "observer-a", "observer-b");
+        var gossiper = new InProcessMembershipGossiper(
+            membership,
+            views,
+            fanout: 1,
+            antiEntropyInterval: 10);
+
+        var first = gossiper.Gossip();
+        Assert.Equal(2, first.Count);
+        Assert.All(first, delivery => Assert.Equal("anti-entropy", delivery.Mode));
+
+        membership.SetHealth("node-b", NodeHealthStatus.Suspect, "probe timeout");
+        var second = gossiper.Gossip();
+
+        Assert.Single(second);
+        Assert.Equal("fanout", second[0].Mode);
+        Assert.Equal("observer-a", second[0].ObserverNodeName);
+        Assert.Equal(NodeHealthStatus.Healthy, views["observer-a"].GetHealth("node-b"));
+        Assert.Equal(NodeHealthStatus.Suspect, views["observer-a"].GetMembers().Single(member => member.NodeName == "node-b").ObservedStatus);
+
+        var restored = new InProcessMembershipGossiper(
+            membership,
+            views,
+            fanout: 1,
+            antiEntropyInterval: 10,
+            gossiper.ExportCheckpoint());
+
+        timeProvider.Advance(TimeSpan.FromSeconds(5));
+        var third = restored.Gossip();
+
+        Assert.Equal(2, third.Count);
+        Assert.Contains(
+            third,
+            delivery => delivery.ObserverNodeName == "observer-b"
+                && delivery.Mode == "fanout"
+                && delivery.ConsumedChanges == 1
+                && delivery.StabilizedNodes == 1);
+        Assert.Contains(
+            third,
+            delivery => delivery.ObserverNodeName == "observer-a"
+                && delivery.Mode == "stabilization"
+                && delivery.ConsumedChanges == 0
+                && delivery.StabilizedNodes == 1);
+        Assert.Equal(NodeHealthStatus.Suspect, views["observer-a"].GetHealth("node-b"));
+        Assert.Equal(NodeHealthStatus.Suspect, views["observer-b"].GetHealth("node-b"));
+    }
+
     private static Dictionary<string, GossipedClusterMembershipView> CreateViews(
         TimeProvider timeProvider,
+        params string[] observerNodeNames)
+        => CreateViews(timeProvider, TimeSpan.Zero, observerNodeNames);
+
+    private static Dictionary<string, GossipedClusterMembershipView> CreateViews(
+        TimeProvider timeProvider,
+        TimeSpan stabilizationWindow,
         params string[] observerNodeNames)
         => observerNodeNames.ToDictionary(
             observerNodeName => observerNodeName,
             observerNodeName => new GossipedClusterMembershipView(
                 observerNodeName,
-                TimeSpan.Zero,
+                stabilizationWindow,
                 timeProvider),
             StringComparer.Ordinal);
 
