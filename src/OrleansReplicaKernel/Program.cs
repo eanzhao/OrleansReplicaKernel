@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Demo;
 using OrleansReplicaKernel.Runtime;
@@ -273,17 +272,17 @@ try
     TraceLog.Write(
         "app",
         "run two PingSlowAsync turns against the same echo activation; generated metadata allows this method to interleave");
-    var interleavingStopwatch = Stopwatch.StartNew();
+    var interleavingStartedAt = host.TimeProvider.GetTimestamp();
     var interleavingFirst = interleavingEcho.PingSlowAsync("interleave-a", 150);
     await PauseAsync(TimeSpan.FromMilliseconds(20));
     var interleavingSecond = interleavingEcho.PingSlowAsync("interleave-b", 150);
     var interleavingResults = await Task.WhenAll(interleavingFirst, interleavingSecond);
-    interleavingStopwatch.Stop();
+    var interleavingElapsed = host.TimeProvider.GetElapsedTime(interleavingStartedAt);
 
     Console.WriteLine();
     TraceLog.Write("result", $"echo-interleave-a = {interleavingResults[0]}");
     TraceLog.Write("result", $"echo-interleave-b = {interleavingResults[1]}");
-    TraceLog.Write("result", $"echo-interleave-elapsed-ms = {interleavingStopwatch.ElapsedMilliseconds}");
+    TraceLog.Write("result", $"echo-interleave-elapsed-ms = {interleavingElapsed.TotalMilliseconds:0}");
 
     var reentrantEcho = host.GetGrain<IEchoGrain>("reentrant-self");
     Console.WriteLine();

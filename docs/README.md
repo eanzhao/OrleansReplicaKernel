@@ -1,9 +1,9 @@
 # 文档导航
 
-本目录包含 76 篇文档，分两个阶段：
+本目录包含 77 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
-- **阶段二（38-76）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
+- **阶段二（38-77）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
 
 ---
 
@@ -75,6 +75,7 @@
 | 58 | [响应历史与关联回收](58-response-history-retention-and-correlation-eviction.md) | 请求/响应历史的保留窗口和清理策略 |
 | 74 | [Transport 与 Retry TimeProvider 收敛](74-transport-and-retry-timeprovider-convergence.md) | transport 注入延迟和 retry backoff 开始共享统一时间源 |
 | 76 | [Host TimeProvider 与 Caller Timeout 收敛](76-host-timeprovider-caller-timeout-and-demo-delay-convergence.md) | host/demo 侧的等待和 caller timeout 开始共享统一时间源 |
+| 77 | [TimeProvider Timestamp 与 Elapsed 收敛](77-timeprovider-timestamp-and-elapsed-observation-convergence.md) | elapsed 观测开始共享同一时间语义，不再依赖裸 Stopwatch |
 
 ### 二、调度与并发
 
@@ -185,6 +186,7 @@
 | 74 | [Transport 与 Retry TimeProvider 收敛](74-transport-and-retry-timeprovider-convergence.md) | request/response 控制路径上的 delay 开始共享统一时间源 |
 | 75 | [ActivationExecutionContext TimeProvider](75-activation-execution-context-timeprovider-and-grain-delay-convergence.md) | activation 内 grain 自己的 slow delay 开始共享统一时间源 |
 | 76 | [Host TimeProvider 与 Caller Timeout 收敛](76-host-timeprovider-caller-timeout-and-demo-delay-convergence.md) | host/demo 侧的等待和 caller timeout 开始共享统一时间源 |
+| 77 | [TimeProvider Timestamp 与 Elapsed 收敛](77-timeprovider-timestamp-and-elapsed-observation-convergence.md) | manual time 现在也能提供一致的 elapsed/timestamp 观测 |
 
 ### 九、生命周期与回收
 
@@ -371,3 +373,4 @@
 | 74 | Transport 与 Retry TimeProvider 收敛 | 设计 |
 | 75 | ActivationExecutionContext TimeProvider | 设计 |
 | 76 | Host TimeProvider 与 Caller Timeout 收敛 | 设计 |
+| 77 | TimeProvider Timestamp 与 Elapsed 收敛 | 设计 |

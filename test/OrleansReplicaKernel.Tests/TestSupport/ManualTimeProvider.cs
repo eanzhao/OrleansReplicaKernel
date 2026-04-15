@@ -6,6 +6,7 @@ internal sealed class ManualTimeProvider : TimeProvider
 {
     private readonly object _lock = new();
     private readonly List<ManualTimer> _timers = [];
+    private const long TimestampTicksPerSecond = TimeSpan.TicksPerSecond;
 
     public ManualTimeProvider(DateTimeOffset utcNow)
     {
@@ -14,7 +15,23 @@ internal sealed class ManualTimeProvider : TimeProvider
 
     public DateTimeOffset UtcNow { get; private set; }
 
-    public override DateTimeOffset GetUtcNow() => UtcNow;
+    public override DateTimeOffset GetUtcNow()
+    {
+        lock (_lock)
+        {
+            return UtcNow;
+        }
+    }
+
+    public override long TimestampFrequency => TimestampTicksPerSecond;
+
+    public override long GetTimestamp()
+    {
+        lock (_lock)
+        {
+            return UtcNow.UtcTicks;
+        }
+    }
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
