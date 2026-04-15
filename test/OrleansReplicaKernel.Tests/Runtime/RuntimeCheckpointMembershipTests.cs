@@ -1,0 +1,118 @@
+using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.Demo;
+using OrleansReplicaKernel.Runtime;
+using OrleansReplicaKernel.Tests.TestSupport;
+
+namespace OrleansReplicaKernel.Tests.Runtime;
+
+public sealed class RuntimeCheckpointMembershipTests
+{
+    [Fact]
+    public async Task RuntimeCheckpoint_RestoresMembershipFanoutCursorAndPendingStabilization()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        OrleansReplicaKernelHost? host = CreateHost(
+            timeProvider,
+            checkpoint: null,
+            stabilizationWindow: TimeSpan.FromSeconds(5),
+            fanout: 1,
+            antiEntropyInterval: 10,
+            "dev-node-2");
+
+        try
+        {
+            var initialPrimary = host.GetMembershipViewSnapshot("dev-node-1").Single(member => member.NodeName == "dev-node-2");
+            var initialSecondary = host.GetMembershipViewSnapshot("dev-node-2").Single(member => member.NodeName == "dev-node-2");
+
+            Assert.Equal(NodeHealthStatus.Healthy, initialPrimary.StableStatus);
+            Assert.Equal(NodeHealthStatus.Healthy, initialPrimary.ObservedStatus);
+            Assert.Equal(NodeHealthStatus.Healthy, initialSecondary.StableStatus);
+            Assert.Equal(NodeHealthStatus.Healthy, initialSecondary.ObservedStatus);
+
+            await host.SetNodeHealthAsync("dev-node-2", NodeHealthStatus.Suspect);
+            var beforeCheckpoint = await host.RunGossipTickAsync();
+
+            Assert.Single(beforeCheckpoint);
+            Assert.Equal("fanout", beforeCheckpoint[0].Mode);
+            Assert.Equal("dev-node-1", beforeCheckpoint[0].ObserverNodeName);
+
+            var primaryBefore = host.GetMembershipViewSnapshot("dev-node-1").Single(member => member.NodeName == "dev-node-2");
+            var secondaryBefore = host.GetMembershipViewSnapshot("dev-node-2").Single(member => member.NodeName == "dev-node-2");
+
+            Assert.Equal(NodeHealthStatus.Healthy, primaryBefore.StableStatus);
+            Assert.Equal(NodeHealthStatus.Suspect, primaryBefore.ObservedStatus);
+            Assert.Equal(NodeHealthStatus.Healthy, secondaryBefore.StableStatus);
+            Assert.Equal(NodeHealthStatus.Healthy, secondaryBefore.ObservedStatus);
+
+            var checkpoint = host.CaptureRuntimeCheckpoint();
+
+            await host.DisposeAsync();
+            host = null;
+
+            host = CreateHost(
+                timeProvider,
+                checkpoint,
+                stabilizationWindow: TimeSpan.FromSeconds(5),
+                fanout: 1,
+                antiEntropyInterval: 10,
+                "dev-node-2");
+
+            timeProvider.Advance(TimeSpan.FromSeconds(5));
+            var afterRestore = await host.RunGossipTickAsync();
+
+            Assert.Equal(2, afterRestore.Count);
+            Assert.Contains(
+                afterRestore,
+                delivery => delivery.ObserverNodeName == "dev-node-2"
+                    && delivery.Mode == "fanout"
+                    && delivery.ConsumedChanges == 1
+                    && delivery.StabilizedNodes == 1);
+            Assert.Contains(
+                afterRestore,
+                delivery => delivery.ObserverNodeName == "dev-node-1"
+                    && delivery.Mode == "stabilization"
+                    && delivery.ConsumedChanges == 0
+                    && delivery.StabilizedNodes == 1);
+
+            var primaryAfter = host.GetMembershipViewSnapshot("dev-node-1").Single(member => member.NodeName == "dev-node-2");
+            var secondaryAfter = host.GetMembershipViewSnapshot("dev-node-2").Single(member => member.NodeName == "dev-node-2");
+
+            Assert.Equal(NodeHealthStatus.Suspect, primaryAfter.StableStatus);
+            Assert.Equal(NodeHealthStatus.Suspect, primaryAfter.ObservedStatus);
+            Assert.Equal(NodeHealthStatus.Suspect, secondaryAfter.StableStatus);
+            Assert.Equal(NodeHealthStatus.Suspect, secondaryAfter.ObservedStatus);
+        }
+        finally
+        {
+            if (host is not null)
+            {
+                await host.DisposeAsync();
+            }
+        }
+    }
+
+    private static OrleansReplicaKernelHost CreateHost(
+        TimeProvider timeProvider,
+        OrleansReplicaKernelRuntimeCheckpoint? checkpoint,
+        TimeSpan stabilizationWindow,
+        int fanout,
+        int antiEntropyInterval,
+        params string[] peerNodeNames)
+    {
+        var builder = new OrleansReplicaKernelBuilder()
+            .AddGeneratedGrainImplementationsFromAssembly(typeof(EchoGrain).Assembly)
+            .AddGeneratedGrainReferencesFromAssembly(typeof(EchoGrainReference).Assembly)
+            .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
+            .WithTimeProvider(timeProvider)
+            .WithMembershipStabilizationWindow(stabilizationWindow)
+            .WithMembershipGossipFanout(fanout)
+            .WithMembershipAntiEntropyInterval(antiEntropyInterval);
+
+        if (checkpoint is not null)
+        {
+            builder.WithRuntimeCheckpoint(checkpoint);
+        }
+
+        return builder.Build("dev-node-1", peerNodeNames);
+    }
+}

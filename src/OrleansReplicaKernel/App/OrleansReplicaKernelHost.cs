@@ -343,15 +343,20 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
 
     public string DescribeMembershipView(string observerNodeName)
     {
+        return string.Join(
+            ", ",
+            GetMembershipViewSnapshot(observerNodeName).Select(
+                item => $"{item.NodeName}:stable={item.StableStatus}/observed={item.ObservedStatus}@{item.LastObservedEpoch}"));
+    }
+
+    public IReadOnlyList<ObservedClusterMemberRecord> GetMembershipViewSnapshot(string observerNodeName)
+    {
         if (!_membershipViews.TryGetValue(observerNodeName, out var membershipView))
         {
             throw new InvalidOperationException($"No membership view registered for '{observerNodeName}'.");
         }
 
-        return string.Join(
-            ", ",
-            membershipView.GetMembers().Select(
-                item => $"{item.NodeName}:stable={item.StableStatus}/observed={item.ObservedStatus}@{item.LastObservedEpoch}"));
+        return membershipView.GetMembers();
     }
 
     public string DescribeGrainDirectory()
