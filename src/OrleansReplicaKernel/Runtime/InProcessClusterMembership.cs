@@ -5,16 +5,19 @@ namespace OrleansReplicaKernel.Runtime;
 public sealed class InProcessClusterMembership : IClusterMembership
 {
     private readonly object _lock = new();
+    private readonly TimeProvider _timeProvider;
     private readonly Dictionary<string, ClusterMemberRecord> _members = new(StringComparer.Ordinal);
     private readonly List<MembershipViewChange> _viewChanges = [];
     private long _currentEpoch;
 
-    public InProcessClusterMembership()
+    public InProcessClusterMembership(TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
-    private InProcessClusterMembership(ClusterMembershipCheckpoint checkpoint)
+    private InProcessClusterMembership(ClusterMembershipCheckpoint checkpoint, TimeProvider? timeProvider)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _currentEpoch = checkpoint.CurrentEpoch;
         foreach (var member in checkpoint.Members)
         {
@@ -37,7 +40,7 @@ public sealed class InProcessClusterMembership : IClusterMembership
 
     public void Register(string nodeName)
     {
-        var utcNow = DateTimeOffset.UtcNow;
+        var utcNow = _timeProvider.GetUtcNow();
         MembershipViewChange viewChange;
         lock (_lock)
         {
@@ -81,7 +84,7 @@ public sealed class InProcessClusterMembership : IClusterMembership
 
     public void SetHealth(string nodeName, NodeHealthStatus status, string reason)
     {
-        var utcNow = DateTimeOffset.UtcNow;
+        var utcNow = _timeProvider.GetUtcNow();
         MembershipViewChange? viewChange = null;
         lock (_lock)
         {
@@ -167,6 +170,8 @@ public sealed class InProcessClusterMembership : IClusterMembership
         }
     }
 
-    public static InProcessClusterMembership Restore(ClusterMembershipCheckpoint checkpoint)
-        => new(checkpoint);
+    public static InProcessClusterMembership Restore(
+        ClusterMembershipCheckpoint checkpoint,
+        TimeProvider? timeProvider = null)
+        => new(checkpoint, timeProvider);
 }

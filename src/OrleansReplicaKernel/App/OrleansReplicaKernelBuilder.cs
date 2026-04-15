@@ -271,7 +271,7 @@ public sealed class OrleansReplicaKernelBuilder
 
         if (_membershipCheckpoint is null)
         {
-            membership = new InProcessClusterMembership();
+            membership = new InProcessClusterMembership(_timeProvider);
             foreach (var currentNodeName in allNodeNames)
             {
                 membership.Register(currentNodeName);
@@ -284,7 +284,7 @@ public sealed class OrleansReplicaKernelBuilder
         }
         else
         {
-            membership = InProcessClusterMembership.Restore(_membershipCheckpoint.ClusterMembership);
+            membership = InProcessClusterMembership.Restore(_membershipCheckpoint.ClusterMembership, _timeProvider);
             views = allNodeNames.ToDictionary(
                 name => name,
                 name =>
