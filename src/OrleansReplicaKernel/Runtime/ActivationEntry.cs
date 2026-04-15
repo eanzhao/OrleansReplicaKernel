@@ -94,6 +94,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                     GrainId,
                     message.RequestChainId,
                     this,
+                    _timeProvider,
                     async () =>
                     {
                         TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");
@@ -355,6 +356,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         GrainId,
                         requestChainId,
                         this,
+                        _timeProvider,
                         async () =>
                         {
                             TraceLog.Write("timer", $"fire {timerName} on {GrainId} chain={requestChainId:N}");

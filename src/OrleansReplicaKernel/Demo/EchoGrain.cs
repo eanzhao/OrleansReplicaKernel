@@ -30,7 +30,7 @@ public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipan
     public async Task<string> PingSlowAsync(string text, int delayMs, CancellationToken cancellationToken = default)
     {
         TraceLog.Write("grain", $"EchoGrain begin PingSlowAsync(\"{text}\") delay={delayMs}ms");
-        await Task.Delay(delayMs, cancellationToken);
+        await DelayAsync(delayMs, cancellationToken);
         _callCount++;
         TraceLog.Write("grain", $"EchoGrain end PingSlowAsync(\"{text}\") count={_callCount}");
         return $"echo:{text}:count={_callCount}";
@@ -101,7 +101,7 @@ public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipan
             period: null,
             _ => OnTimerAsync(timerName));
 
-        await Task.Delay(holdDelayMs, cancellationToken);
+        await DelayAsync(holdDelayMs, cancellationToken);
         TraceLog.Write("grain", $"EchoGrain end HoldTurnWithTimerAsync(\"{timerName}\") count={_callCount}");
         return $"hold:{timerName}:count={_callCount}";
     }
@@ -145,6 +145,14 @@ public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipan
     }
 
     private sealed record EchoHandoffState(int CallCount);
+
+    private static Task DelayAsync(int delayMs, CancellationToken cancellationToken)
+    {
+        var timeProvider = ActivationExecutionContext.CurrentTimeProvider;
+        return timeProvider is null
+            ? Task.Delay(delayMs, cancellationToken)
+            : Task.Delay(TimeSpan.FromMilliseconds(delayMs), timeProvider, cancellationToken);
+    }
 
     private ValueTask OnTimerAsync(string timerName)
     {

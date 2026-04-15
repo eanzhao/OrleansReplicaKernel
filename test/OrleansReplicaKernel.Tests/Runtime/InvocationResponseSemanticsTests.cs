@@ -261,6 +261,62 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task GrainSlowTurn_UsesConfiguredTimeProvider()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(timeProvider, TimeSpan.FromMinutes(5));
+        var grain = host.GetGrain<IEchoGrain>("slow-manual-time");
+
+        var slowCall = grain.PingSlowAsync("manual-slow", 80);
+
+        await Task.Delay(20);
+        Assert.False(slowCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(79));
+        await Task.Delay(20);
+        Assert.False(slowCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+
+        var result = await slowCall.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal("echo:manual-slow:count=1", result);
+    }
+
+    [Fact]
+    public async Task HoldTurnDelay_UsesConfiguredTimeProvider_WithoutLettingTimerBypassTurn()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(timeProvider, TimeSpan.FromMinutes(5));
+        var grain = host.GetGrain<IEchoGrain>("hold-manual-time");
+
+        var holdCall = grain.HoldTurnWithTimerAsync("manual-hold", holdDelayMs: 80, timerDelayMs: 20);
+
+        await Task.Delay(20);
+        Assert.False(holdCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(20));
+        await Task.Delay(20);
+        Assert.False(holdCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(59));
+        await Task.Delay(20);
+        Assert.False(holdCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+
+        var holdResult = await holdCall.WaitAsync(TimeSpan.FromSeconds(1));
+        var timerSnapshot = await WaitForAsync(
+            static async state => await state.GetTimerSnapshotAsync(),
+            static snapshot => snapshot == "timer:manual-hold:count=2",
+            grain,
+            TimeSpan.FromSeconds(1));
+
+        Assert.Equal("hold:manual-hold:count=1", holdResult);
+        Assert.Equal("timer:manual-hold:count=2", timerSnapshot);
+    }
+
+    [Fact]
     public async Task ActivationOwnedTimer_UsesConfiguredTimeProvider()
     {
         var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 15, 0, 0, 0, TimeSpan.Zero));

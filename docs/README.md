@@ -1,9 +1,9 @@
 # 文档导航
 
-本目录包含 74 篇文档，分两个阶段：
+本目录包含 75 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
-- **阶段二（38-74）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
+- **阶段二（38-75）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
 
 ---
 
@@ -91,6 +91,7 @@
 | 68 | [Grain Interleaving 元数据](68-grain-interleaving-metadata-and-allow-interleaving-turns.md) | 方法级 Interleaving：某些方法可以并发执行 |
 | 69 | [Request-Chain Reentrancy](69-request-chain-reentrancy-and-self-call-deadlock-avoidance.md) | 调用链重入：防止 Grain 自己调用自己时死锁 |
 | 70 | [Observer 回调重入](70-observer-callback-reentrancy-and-cross-node-chain-reentry.md) | Observer 回调保持调用链上下文，跨节点不死锁 |
+| 75 | [ActivationExecutionContext TimeProvider](75-activation-execution-context-timeprovider-and-grain-delay-convergence.md) | 统一时间源开始进入 grain 执行体 |
 
 ### 三、目录、放置与路由
 
@@ -181,6 +182,7 @@
 | 72 | [Activation TimeProvider 收敛](72-activation-timeprovider-convergence-and-controlled-time-validation.md) | Activation 本地时间语义统一：Timer、LastTouchedUtc、Idle Collect 都用同一个 TimeProvider |
 | 73 | [Membership TimeProvider 收敛](73-membership-timeprovider-convergence-and-deterministic-view-change-timestamps.md) | Membership View Change 时间戳开始共享统一时间源 |
 | 74 | [Transport 与 Retry TimeProvider 收敛](74-transport-and-retry-timeprovider-convergence.md) | request/response 控制路径上的 delay 开始共享统一时间源 |
+| 75 | [ActivationExecutionContext TimeProvider](75-activation-execution-context-timeprovider-and-grain-delay-convergence.md) | activation 内 grain 自己的 slow delay 开始共享统一时间源 |
 
 ### 九、生命周期与回收
 
@@ -365,3 +367,4 @@
 | 72 | Activation TimeProvider 收敛 | 设计 |
 | 73 | Membership TimeProvider 收敛 | 设计 |
 | 74 | Transport 与 Retry TimeProvider 收敛 | 设计 |
+| 75 | ActivationExecutionContext TimeProvider | 设计 |
