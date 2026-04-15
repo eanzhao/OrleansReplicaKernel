@@ -197,21 +197,21 @@ try
 
     host.FailNextProbe("dev-node-2", "heartbeat miss #1");
     await host.RunProbeTickAsync();
-    LogDeliveries("fanout-1", host.RunGossipTick());
+    LogDeliveries("fanout-1", await host.RunGossipTickAsync());
 
     Console.WriteLine();
     LogMembershipViews("membership-after-fanout-1");
 
     host.FailNextProbe("dev-node-2", "heartbeat miss #2");
     await host.RunProbeTickAsync();
-    LogDeliveries("fanout-2", host.RunGossipTick());
+    LogDeliveries("fanout-2", await host.RunGossipTickAsync());
 
     Console.WriteLine();
     LogMembershipViews("membership-after-fanout-2");
 
     TraceLog.Write("app", $"wait for stabilization window {stabilizationWindow}");
     await Task.Delay(stabilizationWindow + TimeSpan.FromMilliseconds(50));
-    LogDeliveries("anti-entropy", host.RunGossipTick());
+    LogDeliveries("anti-entropy", await host.RunGossipTickAsync());
 
     Console.WriteLine();
     LogMembershipViews("membership-after-anti-entropy");
@@ -240,7 +240,7 @@ try
     LogMembershipViews("membership-after-restart");
     LogDirectoryState("directory-after-restart");
     LogActivationMetadata("activation-metadata-after-restart");
-    LogDeliveries("restart-gossip", host.RunGossipTick());
+    LogDeliveries("restart-gossip", await host.RunGossipTickAsync());
 
     var echoAfterRestart = host.GetGrain<IEchoGrain>("alpha");
     TraceLog.Write("app", "call echo after restart to prove recovered directory record can relocate without rebuilding from empty state");
@@ -353,49 +353,9 @@ try
     var counterAfterIdleCollect = await recoveredCounter.AddAsync(2);
 
     Console.WriteLine();
-    TraceLog.Write("result", $"echo-first = {firstEcho}");
-    TraceLog.Write("result", $"echo-second = {secondEcho}");
-    TraceLog.Write("result", $"echo-remote = {remoteEcho}");
-    TraceLog.Write("result", $"echo-fence-seed = {fenceSeed}");
-    TraceLog.Write("result", $"echo-fence-remote = {fenceRemote}");
-    TraceLog.Write("result", $"echo-fence-after-stale-retry = {fenceAfterStaleRetry}");
-    TraceLog.Write("result", $"echo-dedup-seed = {dedupSeed}");
-    TraceLog.Write("result", $"echo-dedup-after-dropped-response = {dedupAfterDroppedResponse}");
-    TraceLog.Write("result", $"echo-late-response-seed = {lateResponseSeed}");
-    TraceLog.Write("result", $"echo-late-response-timeout = {lateResponseTimeoutResult}");
-    TraceLog.Write("result", $"echo-late-response-after-timeout = {lateResponseAfterTimeout}");
-    TraceLog.Write("result", $"echo-response-ordering-seed = {responseOrderingSeed}");
-    TraceLog.Write("result", $"echo-response-ordering-after-stale = {responseOrderingAfterStaleReplay}");
-    TraceLog.Write("result", $"echo-response-ordering-after-duplicate = {responseOrderingAfterDuplicate}");
-    TraceLog.Write("result", $"echo-callback-result = {callbackResult}");
-    TraceLog.Write("result", $"echo-callback-messages = {callbackMessages}");
-    TraceLog.Write("result", $"echo-callback-after-dispose = {callbackAfterDispose}");
-    TraceLog.Write("result", $"echo-callback-reentrant-result = {reentrantCallbackResult}");
-    TraceLog.Write("result", $"echo-callback-reentrant-observed = {reentrantObserver.DescribeObserved()}");
-    TraceLog.Write("result", $"echo-callback-reentrant-nested = {reentrantObserver.DescribeNestedResults()}");
-    TraceLog.Write("result", $"echo-timer-hold-result = {timerHoldResult}");
-    TraceLog.Write("result", $"echo-timer-snapshot = {timerSnapshot}");
-    TraceLog.Write("result", $"echo-timer-after-deactivate = {timerAfterDeactivate}");
-    TraceLog.Write("result", $"response-disposition-after-runtime-checkpoint[dev-node-1] = {host.DescribeResponseDisposition("dev-node-1")}");
-    TraceLog.Write("result", $"counter-before-runtime-checkpoint-first = {counterBeforeCheckpointFirst}");
-    TraceLog.Write("result", $"counter-before-runtime-checkpoint-second = {counterBeforeCheckpointSecond}");
-    TraceLog.Write("result", $"echo-after-runtime-checkpoint = {recoveredEcho}");
-    TraceLog.Write("result", $"counter-after-runtime-checkpoint = {counterAfterRestart}");
-    TraceLog.Write("result", $"echo-fresh-initial-placement = {freshEchoResult}");
-    TraceLog.Write("result", $"counter-prefer-local-placement = {preferredLocalCounterResult}");
-    TraceLog.Write("result", $"echo-interleave-a = {interleavingResults[0]}");
-    TraceLog.Write("result", $"echo-interleave-b = {interleavingResults[1]}");
-    TraceLog.Write("result", $"echo-interleave-elapsed-ms = {interleavingStopwatch.ElapsedMilliseconds}");
-    TraceLog.Write("result", $"echo-reentrant-self = {reentrantSelfResult}");
-    TraceLog.Write("result", $"handoff-alpha = {handoffPerformed}");
-    TraceLog.Write("result", $"echo-alpha-after-handoff = {alphaAfterHandoff}");
-    TraceLog.Write("result", $"echo-fallback-seed = {fallbackSeed}");
-    TraceLog.Write("result", $"echo-fallback-after-failed-apply = {fallbackAfterApplyFailure}");
-    TraceLog.Write("result", $"echo-fallback-after-failed-capture = {fallbackAfterCaptureFailure}");
-    TraceLog.Write("result", $"echo-drain-in-flight = {inFlightDrainTurn.Result}");
-    TraceLog.Write("result", $"echo-drain-after-handoff = {drainAfterHandoff}");
     TraceLog.Write("result", $"echo-after-idle-collect = {echoAfterIdleCollect}");
     TraceLog.Write("result", $"counter-after-idle-collect = {counterAfterIdleCollect}");
+    TraceLog.Write("result", $"response-disposition-after-runtime-checkpoint[dev-node-1] = {host.DescribeResponseDisposition("dev-node-1")}");
 }
 finally
 {

@@ -16,145 +16,60 @@ public sealed class InProcessNodeRegistry
         }
     }
 
-    public void DelayNextRequest(string nodeName, TimeSpan delay)
-    {
-        lock (_lock)
+    public void DelayNextRequest(string nodeName, TimeSpan delay) =>
+        MutateNode(nodeName, node => node.NextDelay = delay);
+
+    public void FailNextRequestWithResponse(string nodeName, Exception error) =>
+        MutateNode(nodeName, node => node.NextResponseError = error);
+
+    public void DropNextResponse(string nodeName, string reason) =>
+        MutateNode(nodeName, node =>
         {
-            if (_nodes.TryGetValue(nodeName, out var node))
-            {
-                node.NextDelay = delay;
-                return;
-            }
-        }
+            node.NextDroppedResponseReason = reason;
+            node.NextDroppedResponseReplayDelay = null;
+        });
 
-        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
-    }
-
-    public void FailNextRequestWithResponse(string nodeName, Exception error)
-    {
-        lock (_lock)
+    public void DropNextResponseAndReplayLater(string nodeName, TimeSpan replayDelay, string reason) =>
+        MutateNode(nodeName, node =>
         {
-            if (_nodes.TryGetValue(nodeName, out var node))
-            {
-                node.NextResponseError = error;
-                return;
-            }
-        }
+            node.NextDroppedResponseReason = reason;
+            node.NextDroppedResponseReplayDelay = replayDelay;
+        });
 
-        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
-    }
-
-    public void DropNextResponse(string nodeName, string reason)
-    {
-        lock (_lock)
-        {
-            if (_nodes.TryGetValue(nodeName, out var node))
-            {
-                node.NextDroppedResponseReason = reason;
-                node.NextDroppedResponseReplayDelay = null;
-                return;
-            }
-        }
-
-        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
-    }
-
-    public void DropNextResponseAndReplayLater(string nodeName, TimeSpan replayDelay, string reason)
-    {
-        lock (_lock)
-        {
-            if (_nodes.TryGetValue(nodeName, out var node))
-            {
-                node.NextDroppedResponseReason = reason;
-                node.NextDroppedResponseReplayDelay = replayDelay;
-                return;
-            }
-        }
-
-        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
-    }
-
-    public void DuplicateNextResponse(string nodeName, TimeSpan duplicateDelay)
-    {
-        lock (_lock)
-        {
-            if (_nodes.TryGetValue(nodeName, out var node))
-            {
-                node.NextDuplicateResponseDelay = duplicateDelay;
-                return;
-            }
-        }
-
-        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
-    }
+    public void DuplicateNextResponse(string nodeName, TimeSpan duplicateDelay) =>
+        MutateNode(nodeName, node => node.NextDuplicateResponseDelay = duplicateDelay);
 
     public DispatchPlan PrepareDispatch(string sourceNodeName, string targetNodeName)
     {
         lock (_lock)
         {
-            if (!_nodes.TryGetValue(targetNodeName, out var targetNode))
-            {
-                throw new InvalidOperationException($"No in-process node registered for '{targetNodeName}'.");
-            }
+            var targetNode = GetNodeLocked(targetNodeName);
+            var sourceNode = GetNodeLocked(sourceNodeName);
 
-            if (!_nodes.TryGetValue(sourceNodeName, out var sourceNode))
-            {
-                throw new InvalidOperationException($"No in-process node registered for '{sourceNodeName}'.");
-            }
-
-            var delay = targetNode.NextDelay;
-            targetNode.NextDelay = null;
-
-            var nextResponseError = targetNode.NextResponseError;
-            targetNode.NextResponseError = null;
-
-            var nextDroppedResponseReason = targetNode.NextDroppedResponseReason;
-            targetNode.NextDroppedResponseReason = null;
-
-            var nextDroppedResponseReplayDelay = targetNode.NextDroppedResponseReplayDelay;
-            targetNode.NextDroppedResponseReplayDelay = null;
-
-            var nextDuplicateResponseDelay = targetNode.NextDuplicateResponseDelay;
-            targetNode.NextDuplicateResponseDelay = null;
-
-            return new DispatchPlan(
+            var plan = new DispatchPlan(
                 targetNode.RequestReceiver,
                 sourceNode.ResponseReceiver,
-                delay,
-                nextResponseError,
-                nextDroppedResponseReason,
-                nextDroppedResponseReplayDelay,
-                nextDuplicateResponseDelay);
+                targetNode.NextDelay,
+                targetNode.NextResponseError,
+                targetNode.NextDroppedResponseReason,
+                targetNode.NextDroppedResponseReplayDelay,
+                targetNode.NextDuplicateResponseDelay);
+
+            targetNode.NextDelay = null;
+            targetNode.NextResponseError = null;
+            targetNode.NextDroppedResponseReason = null;
+            targetNode.NextDroppedResponseReplayDelay = null;
+            targetNode.NextDuplicateResponseDelay = null;
+
+            return plan;
         }
     }
 
-    public void SetProbeReachable(string nodeName, bool isReachable)
-    {
-        lock (_lock)
-        {
-            if (_nodes.TryGetValue(nodeName, out var node))
-            {
-                node.IsProbeReachable = isReachable;
-                return;
-            }
-        }
+    public void SetProbeReachable(string nodeName, bool isReachable) =>
+        MutateNode(nodeName, node => node.IsProbeReachable = isReachable);
 
-        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
-    }
-
-    public void FailNextProbe(string nodeName, string failureReason)
-    {
-        lock (_lock)
-        {
-            if (_nodes.TryGetValue(nodeName, out var node))
-            {
-                node.NextProbeFailureReason = failureReason;
-                return;
-            }
-        }
-
-        throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
-    }
+    public void FailNextProbe(string nodeName, string failureReason) =>
+        MutateNode(nodeName, node => node.NextProbeFailureReason = failureReason);
 
     public bool Probe(string sourceNodeName, string targetNodeName, out string reason)
     {
@@ -172,10 +87,10 @@ public sealed class InProcessNodeRegistry
                 return false;
             }
 
-            if (node.NextProbeFailureReason is { } failureReason)
+            if (node.NextProbeFailureReason is { } injectedReason)
             {
                 node.NextProbeFailureReason = null;
-                reason = $"probe {sourceNodeName} -> {targetNodeName} missed: {failureReason}";
+                reason = $"probe {sourceNodeName} -> {targetNodeName} missed: {injectedReason}";
                 return false;
             }
 
@@ -183,6 +98,19 @@ public sealed class InProcessNodeRegistry
             return true;
         }
     }
+
+    private void MutateNode(string nodeName, Action<NodeState> mutation)
+    {
+        lock (_lock)
+        {
+            mutation(GetNodeLocked(nodeName));
+        }
+    }
+
+    private NodeState GetNodeLocked(string nodeName) =>
+        _nodes.TryGetValue(nodeName, out var node)
+            ? node
+            : throw new InvalidOperationException($"No in-process node registered for '{nodeName}'.");
 
     public readonly record struct DispatchPlan(
         IMessageReceiver RequestReceiver,

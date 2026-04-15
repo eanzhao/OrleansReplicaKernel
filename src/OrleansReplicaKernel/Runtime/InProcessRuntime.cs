@@ -292,8 +292,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
                     {
                         CompletedAttemptSequence = response.AttemptSequence,
                         PendingAttemptCount = pendingAttemptCount,
-                        WaitingStopped = false
-                        ,
+                        WaitingStopped = false,
                         UpdatedUtc = utcNow
                     };
                 }
@@ -613,40 +612,41 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         }
 
         var cutoff = utcNow - _responseHistoryRetention;
-        foreach (var requestId in _completedRequests
-                     .Where(item => item.Value.CompletedUtc <= cutoff)
-                     .Select(item => item.Key)
-                     .ToArray())
-        {
-            _completedRequests.Remove(requestId);
-        }
+        EvictFromDictionaryLocked(_completedRequests, entry => entry.CompletedUtc <= cutoff);
     }
 
     private void EvictExpiredSourceStateLocked(DateTimeOffset utcNow)
     {
         if (_responseHistoryRetention == TimeSpan.Zero)
         {
-            foreach (var requestId in _sourceRequests
-                         .Where(item => item.Value.PendingAttemptCount == 0)
-                         .Select(item => item.Key)
-                         .ToArray())
-            {
-                _sourceRequests.Remove(requestId);
-            }
-
+            EvictFromDictionaryLocked(_sourceRequests, state => state.PendingAttemptCount == 0);
             return;
         }
 
         var cutoff = utcNow - _responseHistoryRetention;
-        foreach (var requestId in _sourceRequests
-                     .Where(item =>
-                         item.Value.PendingAttemptCount == 0
-                         && item.Value.UpdatedUtc <= cutoff
-                         && (item.Value.CompletedAttemptSequence is not null || item.Value.WaitingStopped))
-                     .Select(item => item.Key)
-                     .ToArray())
+        EvictFromDictionaryLocked(_sourceRequests, state =>
+            state.PendingAttemptCount == 0
+            && state.UpdatedUtc <= cutoff
+            && (state.CompletedAttemptSequence is not null || state.WaitingStopped));
+    }
+
+    private static void EvictFromDictionaryLocked<TKey, TValue>(
+        Dictionary<TKey, TValue> dictionary,
+        Func<TValue, bool> predicate)
+        where TKey : notnull
+    {
+        List<TKey>? keysToRemove = null;
+        foreach (var pair in dictionary)
         {
-            _sourceRequests.Remove(requestId);
+            if (!predicate(pair.Value)) continue;
+            keysToRemove ??= [];
+            keysToRemove.Add(pair.Key);
+        }
+
+        if (keysToRemove is null) return;
+        foreach (var key in keysToRemove)
+        {
+            dictionary.Remove(key);
         }
     }
 

@@ -184,165 +184,19 @@ public sealed class OrleansReplicaKernelBuilder
         RegisterGeneratedGrainReferences();
         RegisterGeneratedObjectReferences();
 
-        var requestedNodeNames = new[] { nodeName }
-            .Concat(peerNodeNames)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        var grainFactories = _grainImplementations.Values.ToDictionary(
-            item => item.GrainType,
-            item => item.GrainFactory,
-            StringComparer.Ordinal);
-        var grainCollectionPolicies = _grainImplementations.Values.ToDictionary(
-            item => item.GrainType,
-            item => new GrainTypeCollectionPolicy(item.CollectionAgeLimit),
-            StringComparer.Ordinal);
-        var grainPlacementHints = _grainImplementations.Values.ToDictionary(
-            item => item.GrainType,
-            item => new GrainTypePlacementHint(item.PreferLocalPlacement),
-            StringComparer.Ordinal);
-        var grainSchedulingPolicies = _grainImplementations.Values.ToDictionary(
-            item => item.GrainType,
-            item => new GrainTypeSchedulingPolicy(item.InterleavableMethods),
-            StringComparer.Ordinal);
-
-        InProcessClusterMembership membership;
-        string[] allNodeNames;
-
-        var runtimeCheckpoint = _runtimeCheckpoint;
-
-        if (_membershipCheckpoint is null)
-        {
-            membership = new InProcessClusterMembership();
-            allNodeNames = requestedNodeNames;
-            foreach (var currentNodeName in allNodeNames)
-            {
-                membership.Register(currentNodeName);
-            }
-        }
-        else
-        {
-            membership = InProcessClusterMembership.Restore(_membershipCheckpoint.ClusterMembership);
-            allNodeNames = _membershipCheckpoint.ClusterMembership.Members
-                .Select(item => item.NodeName)
-                .OrderBy(item => item, StringComparer.Ordinal)
-                .ToArray();
-
-            var requested = requestedNodeNames.OrderBy(item => item, StringComparer.Ordinal).ToArray();
-            if (!requested.SequenceEqual(allNodeNames, StringComparer.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"Requested node set '{string.Join(", ", requested)}' does not match membership checkpoint nodes '{string.Join(", ", allNodeNames)}'.");
-            }
-        }
-
-        var failureDetector = new ConsecutiveFailureDetector(membership);
+        var grainPolicies = BuildGrainPolicies();
+        var allNodeNames = ResolveNodeNames(nodeName, peerNodeNames);
+        var (membership, membershipViews, membershipGossiper) = BuildMembership(allNodeNames);
         var nodeRegistry = new InProcessNodeRegistry();
-
-        var membershipViews = _membershipCheckpoint is null
-            ? allNodeNames.ToDictionary(
-                currentNodeName => currentNodeName,
-                currentNodeName => new GossipedClusterMembershipView(
-                    currentNodeName,
-                    _membershipStabilizationWindow,
-                    _timeProvider),
-                StringComparer.Ordinal)
-            : allNodeNames.ToDictionary(
-                currentNodeName => currentNodeName,
-                currentNodeName =>
-                {
-                    var viewCheckpoint = _membershipCheckpoint.Views.FirstOrDefault(item =>
-                        string.Equals(item.ObserverNodeName, currentNodeName, StringComparison.Ordinal));
-                    if (viewCheckpoint is null)
-                    {
-                        throw new InvalidOperationException(
-                            $"Membership checkpoint does not contain observer view '{currentNodeName}'.");
-                    }
-
-                    return GossipedClusterMembershipView.Restore(
-                        viewCheckpoint,
-                        _membershipStabilizationWindow,
-                        _timeProvider);
-                },
-                StringComparer.Ordinal);
-
-        var membershipGossiper = new InProcessMembershipGossiper(
-            membership,
-            membershipViews,
-            _membershipGossipFanout,
-            _membershipAntiEntropyInterval,
-            _membershipCheckpoint?.Dissemination);
-
-        if (_membershipCheckpoint is null)
-        {
-            membershipGossiper.Gossip();
-        }
-
+        var failureDetector = new ConsecutiveFailureDetector(membership);
         var activationDirectories = new Dictionary<string, IActivationDirectory>(StringComparer.Ordinal);
-        var loadProvider = new ActivationDirectoryLoadProvider(activationDirectories);
-        var placementPolicy = new LeastLoadedPlacementPolicy(nodeName);
-        var relocationPolicy = new HealthyNodeRelocationPolicy(nodeName);
-        var rebalancingPolicy = new LoadSkewRebalancingPolicy(minimumSkew: 1);
-        var grainDirectory = runtimeCheckpoint is null
-            ? new InMemoryGrainDirectory(
-                membershipViews[nodeName],
-                placementPolicy,
-                loadProvider,
-                relocationPolicy,
-                grainPlacementHints)
-            : InMemoryGrainDirectory.Restore(
-                membershipViews[nodeName],
-                placementPolicy,
-                loadProvider,
-                relocationPolicy,
-                runtimeCheckpoint.GrainDirectory,
-                grainPlacementHints);
+        var (grainDirectory, loadProvider, rebalancingPolicy) =
+            BuildDirectory(nodeName, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
         var probeService = new InProcessClusterProbeService(nodeName, membership, nodeRegistry, failureDetector);
-        var locators = new Dictionary<string, IGrainLocator>(StringComparer.Ordinal);
-        var runtimes = new Dictionary<string, InProcessRuntime>(StringComparer.Ordinal);
-        var callbackDirectories = new Dictionary<string, LocalCallbackDirectory>(StringComparer.Ordinal);
-        var objectReferenceFactoryRegistry = new ObjectReferenceFactoryRegistry(
-            _objectReferenceRegistrations.ToDictionary(
-                item => ObjectReferenceFactoryRegistry.GetInterfaceNameFromType(item.Key),
-                item => item.Value.ReferenceFactory,
-                StringComparer.Ordinal));
-
-        foreach (var currentNodeName in allNodeNames)
-        {
-            var transport = new InProcessMessageTransport(membershipViews[currentNodeName], nodeRegistry);
-            var locator = new DirectoryGrainLocator(grainDirectory);
-            var callbackDirectory = new LocalCallbackDirectory();
-            var activationCheckpoint = runtimeCheckpoint?.ActivationDirectories
-                .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));
-            var activationDirectory = activationCheckpoint is null
-                ? new LocalActivationDirectory(
-                    grainFactories,
-                    grainCollectionPolicies,
-                    callbackDirectory,
-                    grainSchedulingPolicies)
-                : LocalActivationDirectory.Restore(
-                    grainFactories,
-                    grainCollectionPolicies,
-                    callbackDirectory,
-                    grainSchedulingPolicies,
-                    activationCheckpoint);
-            var router = new LocalGrainRouter(currentNodeName, locator);
-            var runtime = new InProcessRuntime(
-                currentNodeName,
-                failureDetector,
-                locator,
-                router,
-                activationDirectory,
-                transport,
-                objectReferenceFactoryRegistry,
-                _timeProvider,
-                _responseHistoryRetention);
-
-            locators.Add(currentNodeName, locator);
-            activationDirectories.Add(currentNodeName, activationDirectory);
-            callbackDirectories.Add(currentNodeName, callbackDirectory);
-            runtimes.Add(currentNodeName, runtime);
-            nodeRegistry.Register(currentNodeName, runtime, runtime);
-        }
+        var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
+        var (locators, callbackDirectories, runtimes) =
+            BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
+                grainDirectory, objectReferenceFactoryRegistry, activationDirectories);
 
         var bindings = _grainReferences.ToDictionary(
             item => item.Key,
@@ -369,6 +223,164 @@ public sealed class OrleansReplicaKernelBuilder
                 .Concat(callbackDirectories.Values)
                 .ToArray(),
             bindings);
+    }
+
+    private GrainPolicySet BuildGrainPolicies() => new(
+        _grainImplementations.Values.ToDictionary(
+            item => item.GrainType, item => item.GrainFactory, StringComparer.Ordinal),
+        _grainImplementations.Values.ToDictionary(
+            item => item.GrainType, item => new GrainTypeCollectionPolicy(item.CollectionAgeLimit), StringComparer.Ordinal),
+        _grainImplementations.Values.ToDictionary(
+            item => item.GrainType, item => new GrainTypePlacementHint(item.PreferLocalPlacement), StringComparer.Ordinal),
+        _grainImplementations.Values.ToDictionary(
+            item => item.GrainType, item => new GrainTypeSchedulingPolicy(item.InterleavableMethods), StringComparer.Ordinal));
+
+    private string[] ResolveNodeNames(string nodeName, string[] peerNodeNames)
+    {
+        var requestedNodeNames = new[] { nodeName }
+            .Concat(peerNodeNames)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (_membershipCheckpoint is null)
+        {
+            return requestedNodeNames;
+        }
+
+        var checkpointNodeNames = _membershipCheckpoint.ClusterMembership.Members
+            .Select(item => item.NodeName)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+
+        var requested = requestedNodeNames.OrderBy(item => item, StringComparer.Ordinal).ToArray();
+        if (!requested.SequenceEqual(checkpointNodeNames, StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Requested node set '{string.Join(", ", requested)}' does not match membership checkpoint nodes '{string.Join(", ", checkpointNodeNames)}'.");
+        }
+
+        return checkpointNodeNames;
+    }
+
+    private (InProcessClusterMembership Membership,
+        Dictionary<string, GossipedClusterMembershipView> Views,
+        InProcessMembershipGossiper Gossiper) BuildMembership(string[] allNodeNames)
+    {
+        InProcessClusterMembership membership;
+        Dictionary<string, GossipedClusterMembershipView> views;
+
+        if (_membershipCheckpoint is null)
+        {
+            membership = new InProcessClusterMembership();
+            foreach (var currentNodeName in allNodeNames)
+            {
+                membership.Register(currentNodeName);
+            }
+
+            views = allNodeNames.ToDictionary(
+                name => name,
+                name => new GossipedClusterMembershipView(name, _membershipStabilizationWindow, _timeProvider),
+                StringComparer.Ordinal);
+        }
+        else
+        {
+            membership = InProcessClusterMembership.Restore(_membershipCheckpoint.ClusterMembership);
+            views = allNodeNames.ToDictionary(
+                name => name,
+                name =>
+                {
+                    var viewCheckpoint = _membershipCheckpoint.Views.FirstOrDefault(item =>
+                        string.Equals(item.ObserverNodeName, name, StringComparison.Ordinal))
+                        ?? throw new InvalidOperationException(
+                            $"Membership checkpoint does not contain observer view '{name}'.");
+                    return GossipedClusterMembershipView.Restore(
+                        viewCheckpoint, _membershipStabilizationWindow, _timeProvider);
+                },
+                StringComparer.Ordinal);
+        }
+
+        var gossiper = new InProcessMembershipGossiper(
+            membership, views, _membershipGossipFanout, _membershipAntiEntropyInterval,
+            _membershipCheckpoint?.Dissemination);
+
+        if (_membershipCheckpoint is null)
+        {
+            gossiper.Gossip();
+        }
+
+        return (membership, views, gossiper);
+    }
+
+    private (InMemoryGrainDirectory Directory,
+        ActivationDirectoryLoadProvider LoadProvider,
+        LoadSkewRebalancingPolicy RebalancingPolicy) BuildDirectory(
+        string nodeName,
+        IClusterMembershipView membershipView,
+        IReadOnlyDictionary<string, GrainTypePlacementHint> placementHints,
+        Dictionary<string, IActivationDirectory> activationDirectories)
+    {
+        var loadProvider = new ActivationDirectoryLoadProvider(activationDirectories);
+        var placementPolicy = new LeastLoadedPlacementPolicy(nodeName);
+        var relocationPolicy = new HealthyNodeRelocationPolicy(nodeName);
+        var rebalancingPolicy = new LoadSkewRebalancingPolicy(minimumSkew: 1);
+
+        var directory = _runtimeCheckpoint is null
+            ? new InMemoryGrainDirectory(membershipView, placementPolicy, loadProvider, relocationPolicy, placementHints)
+            : InMemoryGrainDirectory.Restore(membershipView, placementPolicy, loadProvider, relocationPolicy,
+                _runtimeCheckpoint.GrainDirectory, placementHints);
+
+        return (directory, loadProvider, rebalancingPolicy);
+    }
+
+    private ObjectReferenceFactoryRegistry BuildObjectReferenceFactoryRegistry() =>
+        new(_objectReferenceRegistrations.ToDictionary(
+            item => ObjectReferenceFactoryRegistry.GetInterfaceNameFromType(item.Key),
+            item => item.Value.ReferenceFactory,
+            StringComparer.Ordinal));
+
+    private (Dictionary<string, IGrainLocator> Locators,
+        Dictionary<string, LocalCallbackDirectory> CallbackDirectories,
+        Dictionary<string, InProcessRuntime> Runtimes) BuildNodeRuntimes(
+        string[] allNodeNames,
+        GrainPolicySet grainPolicies,
+        Dictionary<string, GossipedClusterMembershipView> membershipViews,
+        InProcessNodeRegistry nodeRegistry,
+        IFailureDetector failureDetector,
+        IGrainDirectory grainDirectory,
+        ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
+        Dictionary<string, IActivationDirectory> activationDirectories)
+    {
+        var locators = new Dictionary<string, IGrainLocator>(StringComparer.Ordinal);
+        var callbackDirectories = new Dictionary<string, LocalCallbackDirectory>(StringComparer.Ordinal);
+        var runtimes = new Dictionary<string, InProcessRuntime>(StringComparer.Ordinal);
+
+        foreach (var currentNodeName in allNodeNames)
+        {
+            var transport = new InProcessMessageTransport(membershipViews[currentNodeName], nodeRegistry);
+            var locator = new DirectoryGrainLocator(grainDirectory);
+            var callbackDirectory = new LocalCallbackDirectory();
+            var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
+                .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));
+            var activationDirectory = activationCheckpoint is null
+                ? new LocalActivationDirectory(
+                    grainPolicies.Factories, grainPolicies.CollectionPolicies,
+                    callbackDirectory, grainPolicies.SchedulingPolicies)
+                : LocalActivationDirectory.Restore(
+                    grainPolicies.Factories, grainPolicies.CollectionPolicies,
+                    callbackDirectory, grainPolicies.SchedulingPolicies, activationCheckpoint);
+            var router = new LocalGrainRouter(currentNodeName, locator);
+            var runtime = new InProcessRuntime(
+                currentNodeName, failureDetector, locator, router, activationDirectory,
+                transport, objectReferenceFactoryRegistry, _timeProvider, _responseHistoryRetention);
+
+            locators.Add(currentNodeName, locator);
+            activationDirectories.Add(currentNodeName, activationDirectory);
+            callbackDirectories.Add(currentNodeName, callbackDirectory);
+            runtimes.Add(currentNodeName, runtime);
+            nodeRegistry.Register(currentNodeName, runtime, runtime);
+        }
+
+        return (locators, callbackDirectories, runtimes);
     }
 
     private void RegisterGeneratedGrainImplementations()
@@ -488,42 +500,10 @@ public sealed class OrleansReplicaKernelBuilder
         bool replaceExisting,
         string sourceDescription)
     {
-        if (replaceExisting)
-        {
-            _objectReferenceRegistrations[contractType] = new ObjectReferenceRegistration(
-                contractType,
-                referenceFactory,
-                isGenerated,
-                sourceDescription);
-            return;
-        }
-
-        if (_objectReferenceRegistrations.TryGetValue(contractType, out var existingRegistration))
-        {
-            if (existingRegistration.IsGenerated
-                && isGenerated
-                && string.Equals(existingRegistration.SourceDescription, sourceDescription, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            if (existingRegistration.IsGenerated && isGenerated)
-            {
-                throw new InvalidOperationException(
-                    $"Multiple generated object reference registrations were found for '{contractType.FullName}': '{existingRegistration.SourceDescription}' and '{sourceDescription}'.");
-            }
-
-            throw new InvalidOperationException(
-                $"Object reference '{contractType.FullName}' is already registered by '{existingRegistration.SourceDescription}'.");
-        }
-
-        _objectReferenceRegistrations.Add(
-            contractType,
-            new ObjectReferenceRegistration(
-                contractType,
-                referenceFactory,
-                isGenerated,
-                sourceDescription));
+        var registration = new ObjectReferenceRegistration(contractType, referenceFactory, isGenerated, sourceDescription);
+        AddRegistration(
+            _objectReferenceRegistrations, contractType, registration, replaceExisting,
+            "object reference", contractType.FullName ?? contractType.Name);
     }
 
     private void AddGrainImplementation(
@@ -536,48 +516,16 @@ public sealed class OrleansReplicaKernelBuilder
         bool replaceExisting,
         string sourceDescription)
     {
-        if (replaceExisting)
-        {
-            _grainImplementations[grainType] = new GrainImplementationRegistration(
-                grainType,
-                grainFactory,
-                collectionAgeLimit,
-                preferLocalPlacement,
-                interleavableMethods?.Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.Ordinal).ToArray() ?? [],
-                isGenerated,
-                sourceDescription);
-            return;
-        }
-
-        if (_grainImplementations.TryGetValue(grainType, out var existingRegistration))
-        {
-            if (existingRegistration.IsGenerated
-                && isGenerated
-                && string.Equals(existingRegistration.SourceDescription, sourceDescription, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            if (existingRegistration.IsGenerated && isGenerated)
-            {
-                throw new InvalidOperationException(
-                    $"Multiple generated grain implementation registrations were found for '{grainType}': '{existingRegistration.SourceDescription}' and '{sourceDescription}'.");
-            }
-
-            throw new InvalidOperationException(
-                $"Grain implementation '{grainType}' is already registered by '{existingRegistration.SourceDescription}'.");
-        }
-
-        _grainImplementations.Add(
-            grainType,
-            new GrainImplementationRegistration(
-                grainType,
-                grainFactory,
-                collectionAgeLimit,
-                preferLocalPlacement,
-                interleavableMethods?.Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.Ordinal).ToArray() ?? [],
-                isGenerated,
-                sourceDescription));
+        var normalizedMethods = interleavableMethods?
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray() ?? [];
+        var registration = new GrainImplementationRegistration(
+            grainType, grainFactory, collectionAgeLimit, preferLocalPlacement,
+            normalizedMethods, isGenerated, sourceDescription);
+        AddRegistration(
+            _grainImplementations, grainType, registration, replaceExisting,
+            "grain implementation", grainType);
     }
 
     private void AddGrainReference(
@@ -588,44 +536,49 @@ public sealed class OrleansReplicaKernelBuilder
         bool replaceExisting,
         string sourceDescription)
     {
+        var registration = new GrainReferenceRegistration(
+            contractType, grainType, referenceFactory, isGenerated, sourceDescription);
+        AddRegistration(
+            _grainReferences, contractType, registration, replaceExisting,
+            "grain reference", contractType.FullName ?? contractType.Name);
+    }
+
+    private static void AddRegistration<TKey, TValue>(
+        Dictionary<TKey, TValue> registry,
+        TKey key,
+        TValue value,
+        bool replaceExisting,
+        string registrationKind,
+        string displayKey)
+        where TKey : notnull
+        where TValue : IRegistrationEntry
+    {
         if (replaceExisting)
         {
-            _grainReferences[contractType] = new GrainReferenceRegistration(
-                contractType,
-                grainType,
-                referenceFactory,
-                isGenerated,
-                sourceDescription);
+            registry[key] = value;
             return;
         }
 
-        if (_grainReferences.TryGetValue(contractType, out var existingRegistration))
+        if (!registry.TryGetValue(key, out var existing))
         {
-            if (existingRegistration.IsGenerated
-                && isGenerated
-                && string.Equals(existingRegistration.SourceDescription, sourceDescription, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            if (existingRegistration.IsGenerated && isGenerated)
-            {
-                throw new InvalidOperationException(
-                    $"Multiple generated grain reference registrations were found for '{contractType.FullName}': '{existingRegistration.SourceDescription}' and '{sourceDescription}'.");
-            }
-
-            throw new InvalidOperationException(
-                $"Grain reference '{contractType.FullName}' is already registered by '{existingRegistration.SourceDescription}'.");
+            registry.Add(key, value);
+            return;
         }
 
-        _grainReferences.Add(
-            contractType,
-            new GrainReferenceRegistration(
-                contractType,
-                grainType,
-                referenceFactory,
-                isGenerated,
-                sourceDescription));
+        if (existing.IsGenerated && value.IsGenerated
+            && string.Equals(existing.SourceDescription, value.SourceDescription, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (existing.IsGenerated && value.IsGenerated)
+        {
+            throw new InvalidOperationException(
+                $"Multiple generated {registrationKind} registrations were found for '{displayKey}': '{existing.SourceDescription}' and '{value.SourceDescription}'.");
+        }
+
+        throw new InvalidOperationException(
+            $"{char.ToUpperInvariant(registrationKind[0])}{registrationKind[1..]} '{displayKey}' is already registered by '{existing.SourceDescription}'.");
     }
 
     private static void ValidateGeneratedObjectReference(Type generatedType, Type interfaceType)
@@ -716,6 +669,12 @@ public sealed class OrleansReplicaKernelBuilder
         }
     }
 
+    private interface IRegistrationEntry
+    {
+        bool IsGenerated { get; }
+        string SourceDescription { get; }
+    }
+
     private sealed record GrainImplementationRegistration(
         string GrainType,
         Func<object> GrainFactory,
@@ -723,18 +682,24 @@ public sealed class OrleansReplicaKernelBuilder
         bool PreferLocalPlacement,
         IReadOnlyList<string> InterleavableMethods,
         bool IsGenerated,
-        string SourceDescription);
+        string SourceDescription) : IRegistrationEntry;
 
     private sealed record GrainReferenceRegistration(
         Type ContractType,
         string GrainType,
         Func<IInvocationRuntime, GrainId, object> ReferenceFactory,
         bool IsGenerated,
-        string SourceDescription);
+        string SourceDescription) : IRegistrationEntry;
 
     private sealed record ObjectReferenceRegistration(
         Type ContractType,
         Func<IInvocationRuntime, GrainId, object> ReferenceFactory,
         bool IsGenerated,
-        string SourceDescription);
+        string SourceDescription) : IRegistrationEntry;
+
+    private sealed record GrainPolicySet(
+        Dictionary<string, Func<object>> Factories,
+        Dictionary<string, GrainTypeCollectionPolicy> CollectionPolicies,
+        Dictionary<string, GrainTypePlacementHint> PlacementHints,
+        Dictionary<string, GrainTypeSchedulingPolicy> SchedulingPolicies);
 }

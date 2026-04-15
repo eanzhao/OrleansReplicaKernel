@@ -1,157 +1,103 @@
 # OrleansReplicaKernel
 
-`OrleansReplicaKernel` 的完整目标，是在新的架构边界和实现组织下，完整复刻 Orleans。
+在新的架构边界和实现组织下，完整复刻 Orleans 分布式 actor 运行时。
 
-当前这份代码还远远没有做到“完整复刻”，但已经把一批最核心的 runtime 主链先跑起来了。现在的状态更准确地说，是“面向完整复刻目标的早期内核阶段”，而不是一个故意只做到一小半的 toy。
-
-## 已做到
-
-- `GetGrain -> grain reference -> IInvokable -> message -> routing -> activation -> scheduler -> response` 这条主调用链已经跑通。
-- 默认单 activation 串行调度已经有了，基础的 turn 执行模型已经立住；同时已经能按 generated grain metadata 让指定方法 interleave，其他方法继续保持串行。
-- grain identity、address、invocation、message、routing、runtime 这些核心分层已经拆开。
-- 单进程内的多节点模拟已经有了，远端转发和响应回包也已经打通。
-- grain directory、locator、owner 迁移、缓存失效这条链已经有最小实现。
-- callback target / observer 这条反向调用链已经有第一版最小实现，远端 grain 已经能通过 runtime 回调 source node 本地注册对象。
-- observer reference 已经有第一版透明 API，grain 端现在可以直接拿强类型 observer reference 发回调，而不是手工传裸 handle。
-- object reference 的第一版“表示 -> 目标端 rehydrate”边界已经补上，observer reference 不再依赖对象本体直接过 invocation 边界。
-- object reference factory registry 已经接进 builder / host / runtime，typed object reference 的创建和目标端重建现在共用一份注册表。
-- generated object reference metadata + builder 级 assembly scan 已经接上，当前这批 generated object reference 不再需要在应用入口逐个手工 `AddObjectReference<T>()`。
-- generated grain reference metadata + builder 级 assembly scan 也已经接上，`GetGrain<T>()` 用到的 contract binding 现在可以从生成代码自动恢复，不再手工逐个写 reference factory。
-- generated grain implementation metadata + builder 级 assembly scan 也已经接上，当前 demo 里这批 `grainType -> activator factory` 不再需要手工逐个 `AddGrainImplementation(...)`。
-- generated grain implementation metadata 已经开始影响运行时行为了：不同 grain type 现在可以带不同的 idle collection age，而不是所有 activation 只吃一个全局回收窗口。
-- generated grain implementation metadata 现在也可以给 initial placement 提 hint 了：没有 hint 的 grain 继续按 least-loaded 走，有 prefer-local hint 的 grain 会优先落到本地 healthy node。
-- generated grain implementation metadata 现在也可以给调度层提 hint 了：当前已经支持把指定方法标成 interleavable turn，同一个 activation 里这些方法可以并发重叠执行，其他方法仍然保持独占 turn。
-- request-chain reentrancy 已经有第一版最小实现了：同一条逻辑调用链里打回同一个 activation 的请求，现在可以重入当前独占 turn，不再因为“自己等自己”卡死。
-- observer callback 这条跨节点回跳链现在也已经吃到 request-chain reentrancy 了：remote grain 调 source callback target，callback target 再打回原 grain 时，不会因为原 grain 还在等 callback 而死锁。
-- activation-owned timer 已经有第一版了：timer callback 会作为正规 activation turn 进入调度器，默认走独占 turn，不会越过当前独占请求；activation deactive 时，挂在它上的 timer 也会一起停掉。
-- membership 的早期主链已经有了：
-  `probe -> failure detector -> authoritative membership -> gossip dissemination -> local membership view -> stabilization`
-- partial fanout 和 anti-entropy 这两类 dissemination 行为已经有最小实现。
-- runtime checkpoint 已经能导出并恢复 membership、directory owner records、activation metadata 等运行时元数据。
-- grain directory checkpoint 和 activation metadata recovery 已经有最小恢复闭环。
-- initial placement、load-aware rebalancing、owner handoff 已经有最小实现。
-- warm handoff、capture/apply fallback、quiescence/drain 这些 handoff 关键边界已经做了第一版。
-- idle collection 已经能按 grain type 的 collection age 回收 activation，并验证 metadata 不会被误当成活实例。
-- `docs/` 下面已经整理出一套从 Orleans 源码分析到复刻路线的文档主线。
+当前处于早期内核阶段：最核心的 runtime 主链已经跑通，但离完整复刻还有明显距离。
 
 ## 仓库结构
 
-- `docs`：对 Orleans 主仓库的源码研究文档
-- `src/OrleansReplicaKernel`：当前这版最小运行时原型
+```
+├── docs/                              # Orleans 源码分析与复刻路线文档（71 篇）
+├── src/OrleansReplicaKernel/
+│   ├── App/                           # 宿主装配与生命周期
+│   │   ├── OrleansReplicaKernelBuilder    # fluent 构建器
+│   │   ├── OrleansReplicaKernelHost       # 运行时门面 API
+│   │   ├── CallbackLease                  # 回调目标生命周期
+│   │   └── TraceLog                       # 诊断日志
+│   ├── Identity/                      # GrainId / GrainAddress / CallbackTargetIdentity
+│   ├── Invocation/                    # IInvokable / 强类型引用 / object reference 序列化
+│   ├── Messaging/                     # InvocationMessage / InvocationResponseMessage
+│   ├── Scheduling/                    # 单 activation turn 调度与方法级 interleaving
+│   ├── Routing/                       # 目录 / 定位 / 路由 / 放置 / 再均衡 / 本地 activation 管理
+│   ├── Runtime/                       # 调用运行时 / 传输 / membership / 探测 / gossip / 故障检测
+│   ├── Demo/                          # 示例 grain 与模拟生成代码
+│   └── Program.cs                     # 端到端演示入口
+└── test/OrleansReplicaKernel.Tests/   # 单元测试（46 个）
+```
 
-## 代码目录
+## 架构主线
 
-- `App`：宿主装配和演示入口
-- `Identity`：`GrainId` / `GrainAddress`
-- `Invocation`：强类型引用和 `IInvokable`
-- `Messaging`：请求/响应消息
-- `Scheduling`：单 activation 调度，默认串行，支持方法级 interleaving hint
-- `Routing`：grain directory / locator / router / placement / rebalancing / relocation / local activation directory
-- `Runtime`：runtime、transport、membership、probe、gossip、local membership view、failure detector
-- `Demo`：示例 grain 和模拟生成代码
+### 调用链
 
-## 还没做到
+```
+GetGrain<T>(key)
+  → grain reference 把方法打包成 IInvokable
+    → runtime 生成 InvocationMessage
+      → router 查目录找 owner
+        → 本地：activation directory → scheduler → turn 执行
+        → 远端：transport 转发 → 目标 node 接收 → 同上
+          → response 回传 → 去重 / 分类 → 返回结果
+```
 
-- 真正的跨进程、跨机器网络传输还没做，现在还是同进程多节点模拟。
-- 真正可落地的 membership storage、cluster membership backend、持久化视图传播还没做。
-- 真正的 distributed grain directory、多副本目录、一致性协议、目录 owner 协调还没做完整。
-- 真正的 placement 策略体系、跨节点负载统计、正式的 rebalancing/handoff 协议还没做完整。
-- 真正的 state storage provider、persistent state、事务、streaming、reminder、timer、provider 生态都还没进入实现阶段。
-- 真正的 reminder、system target 和更完整的 timer 生态还没做；现在只有 activation-owned local timer 的第一版，还没有持久 reminder、timer 恢复、timer 分类调度和系统 target。
-- 真正的 client、gateway、序列化运行时、代码生成器、application part、provider 装配体系还没接到当前内核里。
-- 真正完整的 grain metadata manifest 还没做完；现在只是把 grain reference binding、grain activator discovery、grain collection age、placement hint、方法级 interleaving hint 这几层推进到了 generated metadata + assembly scan，这还不是完整的 grain property / lifecycle / placement manifest。
-- 真正完整的 reentrancy / interleaving 模型还没做完；现在只有 request-chain reentrancy 的第一版和方法级 interleaving hint，还没有 Orleans 那套完整的 call-chain、callback、timer、observer、system target 调度语义。
-- 真正完整的 object reference / observer 序列化协议、跨进程 rehydration、callback 与 client/gateway 的正式接线还没做完。
-- 真正完整的 application part / metadata manifest / 多程序集自动发现体系还没接进来；现在的 object reference 自动发现还只是先补到 builder + assembly scan 这一层。
-- 真正的故障恢复、节点重启恢复、rolling upgrade、兼容性和版本演进都还没有正式实现。
-- 真正的可观测性、诊断、管理面、系统 target、测试基建和性能基准还没有迁进这个新仓库。
-- 真正的线上级别 fencing、stale message rejection、rollback orchestration、handoff state serialization/transport 还没做完整。
-- 真正意义上的“完整复刻 Orleans”还没有完成，现在只是先把最核心、最容易决定架构形状的内核运行时主链搭起来了。
+### Membership 链
 
-## 当前实现主线
+```
+probe tick → failure detector → authoritative membership (epoch)
+  → gossip dissemination (fanout + anti-entropy)
+    → local membership view → stabilization window → stable status
+```
 
-### 调用主链
+### Placement / Directory / Handoff 链
 
-1. `GetGrain`
-2. 强类型引用把方法调用打包成 `IInvokable`
-3. runtime 生成 `InvocationMessage`
-4. router 找到 owner
-5. 如果 owner 在本地，就走本地 activation directory
-6. 如果 owner 在远端，就走同进程 transport
-7. activation scheduler 串行执行 turn
-8. 返回结果
+```
+首次访问 grain → LeastLoadedPlacementPolicy 选 owner
+  → InMemoryGrainDirectory 记录 owner + version
 
-### Membership / Placement / Directory / Activation Recovery 主链
+owner 迁移 → quiesce 旧 activation → capture warm handoff state
+  → directory 更新 owner version → fence 旧/新节点
+    → 目标 node stage handoff state → 下次 GetOrCreate 时 apply
+      → capture/apply 失败时退回 cold handoff
+```
 
-1. `InProcessClusterProbeService` 对 peer 做 probe tick
-2. `ConsecutiveFailureDetector` 把 probe 结果折叠成 authoritative membership 上的状态变更
-3. `InProcessClusterMembership` 负责维护 authoritative view、epoch 和 `MembershipViewChange`
-4. `InProcessMembershipGossiper` 负责 dissemination：
-   - 正常 tick：只挑一部分 observer 做 fanout
-   - anti-entropy tick：专门给 lagging observer 补齐漏掉的变化
-5. `GossipedClusterMembershipView` 不再自己去拉 authoritative membership，而是只消费 gossiper 发来的变化
-6. `GossipedClusterMembershipView` 内部再跑 stabilization，把 observed 状态延迟提升成 stable 状态
-7. `OrleansReplicaKernelHost.CaptureRuntimeCheckpoint()` 会把 authoritative membership、observer view、gossiper dissemination cursor、grain directory owner 记录、activation metadata 一起打包成恢复点
-8. builder 可以用 runtime checkpoint 重建 membership、directory 和 activation metadata 层，这样 restart 后不必重新走初始化传播
-9. `InMemoryGrainDirectory` 在第一次看到 grain 时，会通过 `LeastLoadedPlacementPolicy` 按健康状态和 activation load 选初始 owner
-10. `LoadSkewRebalancingPolicy` 只负责输出“要不要 handoff 到更空的节点”
-11. `OrleansReplicaKernelHost` 在 handoff 前会尝试从旧 activation 捕获一份 `ActivationHandoffRecord`，再把它暂存到目标 node
-12. `ActivationEntry` 在 handoff 前会先进入 quiescing，拒绝新 turn，并等旧 turn drain 完
-13. `LocalActivationDirectory` 只在目标 grain 下次真正创建 activation 时，才会把这份 warm handoff state 应用进去
-14. 如果 `capture / stage / apply` 失败，系统会记日志并退回 cold handoff / cold activation，不做全局 rollback
-15. `LocalActivationDirectory` 恢复的是 activation metadata，不是 activation instance；真正的 grain 实例还是在下一次 `GetOrCreate` 时重新创建
-16. `InMemoryGrainDirectory` 和 `HealthyNodeRelocationPolicy` 只看 stable 状态，所以 relocation 会慢于 authoritative membership
+## 已实现能力
 
-这个设计里故意保留了两层“慢半拍”：
+| 领域 | 能力 |
+|------|------|
+| **调用** | 完整主链：GetGrain → reference → invokable → message → routing → activation → scheduler → response |
+| **调度** | 单 activation 串行 turn；方法级 interleaving hint；request-chain reentrancy |
+| **目录** | grain directory + locator + owner 迁移 + cache 失效；versioned fencing |
+| **放置** | least-loaded initial placement；prefer-local hint；load-skew rebalancing |
+| **传输** | 同进程多节点模拟；延迟/丢包/重放/重复注入 |
+| **Membership** | probe → failure detector → authoritative view → gossip (fanout + anti-entropy) → stabilization |
+| **Handoff** | warm handoff capture/apply；quiescence/drain；capture/apply 失败自动退回 cold path |
+| **回调** | callback target / observer；跨节点回调；object reference rehydrate；request-chain 跨节点重入 |
+| **Timer** | activation-owned timer；不越过独占 turn；随 activation 一起取消 |
+| **元数据** | generated attribute + assembly scan 自动发现 grain implementation / reference / object reference |
+| **恢复** | runtime checkpoint 导出/恢复 membership + directory + activation metadata |
+| **回收** | per-grain-type idle collection age |
 
-- 第一层是 dissemination：因为 fanout 不是全量广播，所以不是每个 observer 都会在同一个 tick 收到变化
-- 第二层是 stabilization：即便 observer 已经收到 `Unhealthy`，也不会立刻把 stable 状态翻过去
+## 未实现能力
 
-这两层叠在一起，才更接近真实系统里 membership dissemination 的味道。
+- 跨进程/跨机器网络传输
+- membership storage backend / 持久化视图传播
+- distributed grain directory（多副本、一致性协议）
+- state storage provider / persistent state / 事务
+- streaming / pub-sub / queue adapter
+- reminder / system target / 完整 timer 生态
+- client / gateway / 序列化运行时 / 代码生成器
+- 完整的 application part / metadata manifest
+- 完整的 reentrancy / interleaving 模型
+- 完整的 object reference 跨进程 rehydration
+- 故障恢复 / rolling upgrade / 版本演进
+- 可观测性 / 诊断 / 管理面 / 性能基准
 
-checkpoint 在当前实现里扮演的角色也刻意收得很窄：
+## 设计要点
 
-- 它是 restart recovery 的加速器
-- 它不是新的 authoritative truth
-- 真正的集群事实，仍然来自 authoritative membership 加后续传播和校准
-- activation metadata 可以加速恢复，但不会替你恢复真实实例内存
-- warm handoff state 只服务在线 owner 切换，也不会被 checkpoint 直接持久化下来
-- warm handoff fallback 也只服务在线迁移，不会把失败补偿扩散成 checkpoint rollback
-- quiescence/drain 只服务 handoff 顺序边界，不负责持久化和目录事实
+**两层"慢半拍"**：dissemination 不是全量广播（fanout 只挑部分 observer），stabilization 延迟提升 stable 状态。叠在一起更接近真实系统的 membership dissemination。
 
-## Program 演示什么
+**checkpoint 角色收窄**：checkpoint 是 restart recovery 的加速器，不是 authoritative truth。集群事实来自 authoritative membership + 后续传播校准。activation metadata 加速恢复但不恢复实例内存。
 
-`Program.cs` 现在会这样跑：
-
-1. 起 3 个 node：`dev-node-1`、`dev-node-2`、`dev-node-3`
-2. gossip 参数设成：
-   - `fanout = 1`
-   - `antiEntropyInterval = 4`
-3. 先让 `IEchoGrain` 本地跑两次，再把 owner 挪到 `dev-node-2`，确认 warm handoff state 能跟着一起过去
-4. 连续制造两次对 `dev-node-2` 的 probe miss
-5. 每次 probe 之后都只跑一轮 fanout gossip，并打印这轮实际发给了哪个 observer
-6. 这时你会看到：
-   - authoritative membership 已经变了
-   - 但不是所有 observer 都已经收到
-   - 收到的 observer 里，也不是立刻 stable `Unhealthy`
-7. 再等 stabilization window 过去，跑下一轮 gossip；因为这个 demo 设的是 `antiEntropyInterval = 4`，所以这一轮会切到 anti-entropy
-8. anti-entropy 会把 lagging observer 追平，同时让已经收到变化的 observer 完成 stabilization
-9. 接着把 `counter` 先跑热，再导出一份 runtime checkpoint，里面会保存 authoritative epoch、observer 本地 view、dissemination cursor、directory owner 记录、activation metadata
-10. 销毁 host，再用 runtime checkpoint 重建一份新 host
-11. 重建后的第一眼 membership view、grain directory 和 activation metadata 都已经是恢复过的，不需要再从空状态开始同步
-12. 这时直接调 echo，directory 会用恢复出来的 owner 记录配合 stable local view 立刻做 relocation，不需要重新从空目录学习
-13. 再新建一个 `fresh-placement` grain，确认没有特殊 hint 的 grain 会继续按 least-loaded 放到更空的 `dev-node-3`
-14. 再新建一个带 prefer-local hint 的 `counter/prefer-local-placement`，确认它会优先留在本地 healthy node，而不是跟着 least-loaded 走
-15. 再跑一条 `echo/interleaving`，连续发两个 `PingSlowAsync`，确认 generated grain metadata 已经能把指定方法放进 interleavable turn，整体耗时会明显小于串行两次相加
-16. 再跑一条 `echo/reentrant-self`，让同一个 grain 在一条逻辑调用链里回调自己，确认 request-chain reentrancy 已经能让独占 turn 安全重入，不会卡死
-17. 再跑一条 `echo/callback-reentrant`，让 remote grain 先回调 source node 的 observer，再由 observer 反过来打回原 grain，确认这条跨节点 callback 链也已经能靠同一条 request chain 安全重入
-18. 再跑一条 `echo/timer-hold`，在独占 turn 里挂一个 activation-owned timer，确认 timer callback 不会插队越过当前 turn，而是等当前 turn 结束后再进入 activation
-19. 再跑一条 `echo/timer-deactivate`，挂上 timer 后立刻 deactive grain，确认 timer 会跟着 activation 一起取消
-20. 然后对 `echo/alpha` 跑一次 `RebalanceGrainAsync`，确认 rebalancing 只做决策，handoff 才真的切 owner；而且因为 `EchoGrain` 支持 warm handoff，计数会跟着一起迁过去
-21. 再单独跑一条 `echo/fallback`，分别注入一次 apply 失败和 capture 失败，确认系统都会自动退回 cold path
-22. 再跑一条 `echo/drain`，先发一个慢调用，再在它还没结束时 handoff，确认旧 turn 会先 drain 完，再切 owner
-23. 再调 `counter` 时，你会看到先命中“恢复出来的 activation metadata”，但真实实例仍然是新建的，所以计数不会延续到 checkpoint 前的值
-24. 最后再用 idle collection 验证不同 grain type 可以吃不同的 collection age：`counter` 会先被收掉，`echo` 会继续活着；同时 activation metadata 也不会被错误地当成活实例
+**handoff fallback**：warm handoff 的 capture / stage / apply 每一步失败都会记日志并退回 cold path，不做全局 rollback。
 
 ## 运行
 
@@ -159,45 +105,44 @@ checkpoint 在当前实现里扮演的角色也刻意收得很窄：
 dotnet run --project src/OrleansReplicaKernel/OrleansReplicaKernel.csproj
 ```
 
-如果你想直接用这套独立 solution，就在仓库根目录跑：
+运行测试：
 
 ```bash
-dotnet build OrleansReplicaKernel.slnx
-dotnet run --project src/OrleansReplicaKernel/OrleansReplicaKernel.csproj
+dotnet test
 ```
 
-输出里重点看这几类日志：
+### 关键日志标签
 
-- `probe`：哪轮 probe 命中了、哪轮 miss 了
-- `membership`：authoritative membership 上产生了哪些变化
-- `gossip`：每轮 dissemination 实际送给了哪个 observer、送了哪些 epoch
-- `result ... deliveries`：更适合直接看 demo 的 fanout / anti-entropy 结果
-- `stabilization`：某个 observer 什么时候把 observed 状态提升成 stable 状态
-- `runtime-checkpoint` / `membership-after-restart`：runtime checkpoint 导出和 restart recovery 的效果
-- `directory-after-restart` / `activation-metadata-after-restart`：directory owner 记录和 activation metadata 的恢复效果
-- `placement`：第一次看到新 grain 时，initial placement 选中了哪个健康节点
-- `scheduler`：某个 turn 是不是按 exclusive 还是 interleavable 方式进入 activation
-- `rebalancing`：负载不均时，policy 认为应该把 grain 迁到哪儿
-- `handoff-state`：旧 activation 有没有导出 warm handoff state，目标 activation 有没有接到
-- `handoff`：真正执行 owner 切换、locator 失效和旧 activation 下线的动作
-- `fallback to cold handoff` / `fallback to cold activation`：warm handoff 失败时系统是在哪一层退回保底路径的
-- `begin quiesce` / `drained quiescing activation`：旧 activation 是不是先安静下来，再进入 handoff
-- `placement-load-after-*`：每轮演示之后三个节点各自的 activation load
-- `relocation`：owner 什么时候真正被迁走
-- `retry`：runtime 什么时候先命中旧地址，再做 invalidation + retry
+| 标签 | 含义 |
+|------|------|
+| `probe` | probe 命中 / miss |
+| `membership` | authoritative membership 状态变更 |
+| `gossip` | dissemination 送给了哪个 observer、哪些 epoch |
+| `stabilization` | observer 把 observed 状态提升成 stable |
+| `placement` | initial placement 选中了哪个节点 |
+| `scheduler` | turn 是 exclusive 还是 interleavable |
+| `handoff` / `handoff-state` | owner 切换 / warm handoff state capture/apply |
+| `fencing` | stale message rejection |
+| `retry` | runtime invalidation + retry |
+| `timer` | activation timer 注册 / 触发 / 取消 |
 
-## 当前还没覆盖的具体能力
+## Program 演示场景
 
-- 真网络
-- 真 membership storage
-- 真 gossip fanout 策略优化
-- 真 anti-entropy session / digest
-- 真 checkpoint persistence / reload IO
-- 真多副本目录
-- 真分布式 placement / handoff 协议
-- 真 handoff state serialization / transport
-- 真 handoff rollback orchestration
-- 真 quiescing request forwarding / fencing
-- 真 probe timeout / ping payload
+Demo 在 3 个模拟节点上依次验证：
 
-当前版本主要是在把 authoritative membership、gossip dissemination、local membership view、runtime checkpoint、grain directory、activation metadata、initial placement、load-aware rebalancing、warm handoff、handoff fallback、quiescence/drain 这些层先拆开，并让它们先形成一条可运行、可验证、可继续扩展的内核主线。
+1. **基本调用** — 本地 echo + 远端 owner 迁移
+2. **Fencing** — stale address rejection + invalidation retry
+3. **去重** — 丢包后重试命中 deduplication cache
+4. **超时** — late response 到达后被分类丢弃
+5. **响应排序** — stale/duplicate response 分类
+6. **回调** — remote grain 回调 source node observer + dispose 后调用失败
+7. **重入回调** — observer callback 跨节点重入原 grain
+8. **Timer** — 独占 turn 内注册 timer 不插队；deactivate 取消 timer
+9. **Membership** — 连续 probe miss → gossip fanout → anti-entropy → stabilization
+10. **Checkpoint** — 导出 runtime checkpoint → 销毁 → 重建 → 恢复后调用
+11. **Placement** — least-loaded 放置 + prefer-local hint
+12. **Interleaving** — 标记方法并发执行，耗时 < 串行
+13. **Reentrancy** — 同 grain 自调用不死锁
+14. **Warm handoff** — rebalance 带 state 迁移 + apply/capture 失败退回 cold path
+15. **Drain** — 慢调用期间 handoff，旧 turn drain 后再切 owner
+16. **Idle collection** — per-grain-type collection age 差异化回收

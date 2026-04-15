@@ -171,25 +171,25 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         return true;
     }
 
-    public void SetNodeHealth(string nodeName, NodeHealthStatus status)
+    public async ValueTask SetNodeHealthAsync(string nodeName, NodeHealthStatus status)
     {
         _membership.SetHealth(nodeName, status, "manual override");
 
         if (status != NodeHealthStatus.Healthy && _activationDirectories.TryGetValue(nodeName, out var activationDirectory))
         {
-            var shedCount = activationDirectory.DeactivateAllAsync().AsTask().GetAwaiter().GetResult();
+            var shedCount = await activationDirectory.DeactivateAllAsync();
             TraceLog.Write("app", $"shed {shedCount} activations on unhealthy node {nodeName}");
         }
     }
 
-    public void ReportFailureSignal(string nodeName, string reason)
+    public async ValueTask ReportFailureSignalAsync(string nodeName, string reason)
     {
         _failureDetector.ReportFailure(nodeName, reason);
 
         if (_membership.GetHealth(nodeName) == NodeHealthStatus.Unhealthy
             && _activationDirectories.TryGetValue(nodeName, out var activationDirectory))
         {
-            var shedCount = activationDirectory.DeactivateAllAsync().AsTask().GetAwaiter().GetResult();
+            var shedCount = await activationDirectory.DeactivateAllAsync();
             TraceLog.Write("app", $"shed {shedCount} activations after failure detector marked {nodeName} unhealthy");
         }
     }
@@ -199,10 +199,8 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         _failureDetector.ReportSuccess(nodeName, reason);
     }
 
-    public void SetNodeAvailability(string nodeName, bool isAvailable)
-    {
-        SetNodeHealth(nodeName, isAvailable ? NodeHealthStatus.Healthy : NodeHealthStatus.Unhealthy);
-    }
+    public ValueTask SetNodeAvailabilityAsync(string nodeName, bool isAvailable) =>
+        SetNodeHealthAsync(nodeName, isAvailable ? NodeHealthStatus.Healthy : NodeHealthStatus.Unhealthy);
 
     public void SetProbeReachable(string nodeName, bool isReachable)
     {
@@ -223,7 +221,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         return probed;
     }
 
-    public IReadOnlyList<MembershipGossipDelivery> RunGossipTick()
+    public async ValueTask<IReadOnlyList<MembershipGossipDelivery>> RunGossipTickAsync()
     {
         var deliveries = _membershipGossiper.Gossip();
         var deliveredChanges = deliveries.Sum(item => item.ConsumedChanges);
@@ -232,22 +230,8 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
             deliveries
                 .Select(item => $"{item.ObserverNodeName}:{item.Mode}[{item.FromExclusiveEpoch}->{item.ToInclusiveEpoch}]@tick{item.TickNumber}")
                 .Distinct(StringComparer.Ordinal));
-        var primaryMembershipView = _membershipViews[_nodeName];
 
-        foreach (var member in _membership.GetMembers())
-        {
-            if (primaryMembershipView.GetHealth(member.NodeName) != NodeHealthStatus.Unhealthy
-                || !_activationDirectories.TryGetValue(member.NodeName, out var activationDirectory))
-            {
-                continue;
-            }
-
-            var shedCount = activationDirectory.DeactivateAllAsync().AsTask().GetAwaiter().GetResult();
-            if (shedCount > 0)
-            {
-                TraceLog.Write("app", $"shed {shedCount} activations during gossip for unhealthy node {member.NodeName}");
-            }
-        }
+        await ShedUnhealthyActivationsAsync();
 
         TraceLog.Write(
             "app",
@@ -347,24 +331,8 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
     public async ValueTask RunClusterMonitoringRoundAsync(CancellationToken cancellationToken = default)
     {
         var probed = await RunProbeTickAsync(cancellationToken);
-        var deliveries = RunGossipTick();
+        var deliveries = await RunGossipTickAsync();
         var deliveredChanges = deliveries.Sum(item => item.ConsumedChanges);
-        var primaryMembershipView = _membershipViews[_nodeName];
-
-        foreach (var member in _membership.GetMembers())
-        {
-            if (primaryMembershipView.GetHealth(member.NodeName) != NodeHealthStatus.Unhealthy
-                || !_activationDirectories.TryGetValue(member.NodeName, out var activationDirectory))
-            {
-                continue;
-            }
-
-            var shedCount = await activationDirectory.DeactivateAllAsync();
-            if (shedCount > 0)
-            {
-                TraceLog.Write("app", $"shed {shedCount} activations during monitoring for unhealthy node {member.NodeName}");
-            }
-        }
 
         TraceLog.Write(
             "app",
@@ -422,6 +390,25 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         foreach (var managedNode in _managedNodes)
         {
             await managedNode.DisposeAsync();
+        }
+    }
+
+    private async ValueTask ShedUnhealthyActivationsAsync()
+    {
+        var primaryMembershipView = _membershipViews[_nodeName];
+        foreach (var member in _membership.GetMembers())
+        {
+            if (primaryMembershipView.GetHealth(member.NodeName) != NodeHealthStatus.Unhealthy
+                || !_activationDirectories.TryGetValue(member.NodeName, out var activationDirectory))
+            {
+                continue;
+            }
+
+            var shedCount = await activationDirectory.DeactivateAllAsync();
+            if (shedCount > 0)
+            {
+                TraceLog.Write("app", $"shed {shedCount} activations on unhealthy node {member.NodeName}");
+            }
         }
     }
 

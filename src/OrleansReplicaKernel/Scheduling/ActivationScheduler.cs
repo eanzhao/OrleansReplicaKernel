@@ -50,14 +50,14 @@ public sealed class ActivationScheduler : IAsyncDisposable
         {
             lock (_lock)
             {
-                if (CanDispatchReentrantUnsafe(item))
+                if (CanDispatchReentrantLocked(item))
                 {
-                    DispatchReentrantUnsafe(item);
+                    DispatchReentrantLocked(item);
                 }
                 else
                 {
                     _pending.Enqueue(item);
-                    TryDispatchPendingUnsafe();
+                    TryDispatchPendingLocked();
                 }
             }
         }
@@ -65,11 +65,11 @@ public sealed class ActivationScheduler : IAsyncDisposable
         lock (_lock)
         {
             _inputCompleted = true;
-            SignalDrainedIfNeededUnsafe();
+            SignalDrainedIfNeededLocked();
         }
     }
 
-    private void TryDispatchPendingUnsafe()
+    private void TryDispatchPendingLocked()
     {
         while (_pending.Count > 0)
         {
@@ -87,7 +87,7 @@ public sealed class ActivationScheduler : IAsyncDisposable
                 }
 
                 _pending.Dequeue();
-                DispatchExclusiveUnsafe(next);
+                DispatchExclusiveLocked(next);
                 return;
             }
 
@@ -97,12 +97,12 @@ public sealed class ActivationScheduler : IAsyncDisposable
         }
     }
 
-    private bool CanDispatchReentrantUnsafe(WorkItem item)
+    private bool CanDispatchReentrantLocked(WorkItem item)
         => _exclusiveTurnActive
            && _exclusiveRequestChainId is { } activeChainId
            && activeChainId == item.RequestChainId;
 
-    private void DispatchReentrantUnsafe(WorkItem item)
+    private void DispatchReentrantLocked(WorkItem item)
     {
         _activeTurnCount++;
         if (!item.AllowInterleaving)
@@ -116,7 +116,7 @@ public sealed class ActivationScheduler : IAsyncDisposable
         Dispatch(item);
     }
 
-    private void DispatchExclusiveUnsafe(WorkItem item)
+    private void DispatchExclusiveLocked(WorkItem item)
     {
         _exclusiveTurnActive = true;
         _exclusiveRequestChainId = item.RequestChainId;
@@ -159,14 +159,14 @@ public sealed class ActivationScheduler : IAsyncDisposable
                         }
                     }
 
-                    TryDispatchPendingUnsafe();
-                    SignalDrainedIfNeededUnsafe();
+                    TryDispatchPendingLocked();
+                    SignalDrainedIfNeededLocked();
                 }
             }
         });
     }
 
-    private void SignalDrainedIfNeededUnsafe()
+    private void SignalDrainedIfNeededLocked()
     {
         if (_inputCompleted && _pending.Count == 0 && _activeTurnCount == 0)
         {
