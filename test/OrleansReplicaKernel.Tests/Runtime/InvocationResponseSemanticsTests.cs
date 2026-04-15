@@ -73,6 +73,38 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task HostTimingHelpers_UseConfiguredTimeProvider()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(timeProvider, TimeSpan.FromMinutes(5));
+
+        var startedAt = host.GetTimestamp();
+        var delay = host.DelayAsync(TimeSpan.FromMilliseconds(80));
+
+        await Task.Delay(20);
+        Assert.False(delay.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(79));
+        await Task.Delay(20);
+        Assert.False(delay.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+        await delay.WaitAsync(TimeSpan.FromSeconds(1));
+
+        using var timeout = host.CreateTimeoutSource(TimeSpan.FromMilliseconds(50));
+        Assert.False(timeout.IsCancellationRequested);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(49));
+        Assert.False(timeout.IsCancellationRequested);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+        await Task.Delay(20);
+
+        Assert.True(timeout.IsCancellationRequested);
+        Assert.Equal(TimeSpan.FromMilliseconds(130), host.GetElapsedTime(startedAt));
+    }
+
+    [Fact]
     public async Task DroppedResponse_RetriesSameRequestId_WithoutReexecutingGrainMethod()
     {
         await using var host = CreateHost("dev-node-1", "dev-node-2");

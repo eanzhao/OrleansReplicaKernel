@@ -122,6 +122,18 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
             implementation,
             grainId => _objectReferenceFactoryRegistry.Create<TObjectReference>(_runtime, grainId));
 
+    public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken = default) =>
+        Task.Delay(delay, TimeProvider, cancellationToken);
+
+    public CancellationTokenSource CreateTimeoutSource(TimeSpan delay) => new(delay, TimeProvider);
+
+    public long GetTimestamp() => TimeProvider.GetTimestamp();
+
+    public TimeSpan GetElapsedTime(long startingTimestamp) => TimeProvider.GetElapsedTime(startingTimestamp);
+
+    public TimeSpan GetElapsedTime(long startingTimestamp, long endingTimestamp) =>
+        TimeProvider.GetElapsedTime(startingTimestamp, endingTimestamp);
+
     public async ValueTask<bool> DeactivateGrainAsync<TContract>(string key)
         where TContract : class
     {
