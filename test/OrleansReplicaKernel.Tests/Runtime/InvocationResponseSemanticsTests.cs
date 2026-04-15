@@ -200,6 +200,31 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task ActivationOwnedTimer_UsesConfiguredTimeProvider()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 15, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(timeProvider, TimeSpan.FromMinutes(5));
+        var grain = host.GetGrain<IEchoGrain>("timer-manual-time");
+
+        await grain.ArmOneShotTimerAsync("manual", 80);
+
+        Assert.Equal("<none>", await grain.GetTimerSnapshotAsync());
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(79));
+        Assert.Equal("<none>", await grain.GetTimerSnapshotAsync());
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+
+        var snapshot = await WaitForAsync(
+            static async state => await state.GetTimerSnapshotAsync(),
+            static snapshot => snapshot == "timer:manual:count=1",
+            grain,
+            TimeSpan.FromSeconds(1));
+
+        Assert.Equal("timer:manual:count=1", snapshot);
+    }
+
+    [Fact]
     public async Task DeactivatingActivation_CancelsOwnedTimers()
     {
         await using var host = CreateHost();
@@ -352,4 +377,29 @@ public sealed class InvocationResponseSemanticsTests
             .AddGeneratedGrainReferencesFromAssembly(typeof(EchoGrainReference).Assembly)
             .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
             .Build("dev-node-1", peerNodeNames);
+
+    private static async Task<T> WaitForAsync<T, TState>(
+        Func<TState, Task<T>> probe,
+        Func<T, bool> predicate,
+        TState state,
+        TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (true)
+        {
+            var value = await probe(state);
+            if (predicate(value))
+            {
+                return value;
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException("Timed out waiting for the expected test condition.");
+            }
+
+            await Task.Delay(10);
+        }
+    }
 }

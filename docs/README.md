@@ -1,9 +1,9 @@
 # 文档导航
 
-本目录包含 71 篇文档，分两个阶段：
+本目录包含 72 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
-- **阶段二（38-71）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
+- **阶段二（38-72）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
 
 ---
 
@@ -176,6 +176,7 @@
 | 编号 | 文档 | 简介 |
 |------|------|------|
 | 71 | [Activation 级 Timer](71-activation-owned-timers-and-timer-turn-classification.md) | Timer 归属 Activation，随 Activation 销毁而取消 |
+| 72 | [Activation TimeProvider 收敛](72-activation-timeprovider-convergence-and-controlled-time-validation.md) | Timer、LastTouchedUtc、Idle Collect 开始共享统一时间源 |
 
 ### 九、生命周期与回收
 
@@ -357,3 +358,4 @@
 | 69 | Request-Chain Reentrancy | 设计 |
 | 70 | Observer 回调重入 | 设计 |
 | 71 | Activation 级 Timer | 设计 |
+| 72 | Activation TimeProvider 收敛 | 设计 |

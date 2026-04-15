@@ -16,6 +16,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
     private readonly object _instance;
     private readonly object _quiesceLock = new();
     private readonly object _timerLock = new();
+    private readonly TimeProvider _timeProvider;
     private readonly ActivationScheduler _scheduler;
     private readonly GrainTypeSchedulingPolicy _schedulingPolicy;
     private readonly Dictionary<Guid, ActivationTimerRegistration> _timers = new();
@@ -28,13 +29,15 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         GrainId grainId,
         object instance,
         long ownerVersion,
-        GrainTypeSchedulingPolicy schedulingPolicy)
+        GrainTypeSchedulingPolicy schedulingPolicy,
+        TimeProvider timeProvider)
         : this(
             grainId,
             instance,
-            DateTimeOffset.UtcNow,
+            timeProvider.GetUtcNow(),
             ownerVersion,
             schedulingPolicy,
+            timeProvider,
             isRecovered: false)
     {
     }
@@ -45,11 +48,13 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         DateTimeOffset lastTouchedUtc,
         long ownerVersion,
         GrainTypeSchedulingPolicy schedulingPolicy,
+        TimeProvider timeProvider,
         bool isRecovered)
     {
         GrainId = grainId;
         OwnerVersion = ownerVersion;
         _instance = instance;
+        _timeProvider = timeProvider;
         _schedulingPolicy = schedulingPolicy;
         _scheduler = new ActivationScheduler(grainId.ToString());
         _lastTouchedUtcTicks = lastTouchedUtc.UtcTicks;
@@ -130,6 +135,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
             timerName,
             dueTime,
             period,
+            _timeProvider,
             cancellationToken => FireTimerAsync(timerName, runtime, callback, cancellationToken),
             RemoveTimer);
 
@@ -211,7 +217,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
             return null;
         }
 
-        var capturedUtc = DateTimeOffset.UtcNow;
+        var capturedUtc = _timeProvider.GetUtcNow();
         var payload = participant.CaptureHandoffState();
         Touch();
         TraceLog.Write("activation", $"capture warm handoff state {GrainId} at {capturedUtc:O}");
@@ -236,13 +242,15 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
     public static ActivationEntry Restore(
         ActivationMetadataRecord metadata,
         object instance,
-        GrainTypeSchedulingPolicy schedulingPolicy)
+        GrainTypeSchedulingPolicy schedulingPolicy,
+        TimeProvider timeProvider)
         => new(
             metadata.GrainId,
             instance,
             metadata.LastTouchedUtc,
             metadata.OwnerVersion,
             schedulingPolicy,
+            timeProvider,
             isRecovered: true);
 
     private Task WaitForDrainAsync()
@@ -374,5 +382,5 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         }
     }
 
-    private void Touch() => Interlocked.Exchange(ref _lastTouchedUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+    private void Touch() => Interlocked.Exchange(ref _lastTouchedUtcTicks, _timeProvider.GetUtcNow().UtcTicks);
 }

@@ -1,6 +1,7 @@
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
+using OrleansReplicaKernel.Tests.TestSupport;
 
 namespace OrleansReplicaKernel.Tests.Routing;
 
@@ -82,6 +83,7 @@ public sealed class LocalActivationDirectoryTests
             },
             new LocalCallbackDirectory(),
             grainSchedulingPolicies: null,
+            timeProvider: TimeProvider.System,
             checkpoint);
 
         Assert.Throws<StaleGrainAddressException>(
@@ -96,6 +98,7 @@ public sealed class LocalActivationDirectoryTests
     [Fact]
     public async Task CollectIdleAsync_UsesPerGrainCollectionAgeLimitWhenPresent()
     {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 15, 0, 0, 0, TimeSpan.Zero));
         var fastFactory = new TrackingInstanceFactory<PassiveTestGrain>();
         var slowFactory = new TrackingInstanceFactory<PassiveTestGrain>();
         await using var directory = new LocalActivationDirectory(
@@ -109,12 +112,13 @@ public sealed class LocalActivationDirectoryTests
                 ["FastGrain"] = new(TimeSpan.FromMilliseconds(50)),
                 ["SlowGrain"] = new(TimeSpan.FromSeconds(5)),
             },
-            new LocalCallbackDirectory());
+            new LocalCallbackDirectory(),
+            timeProvider: timeProvider);
 
         var initialFast = directory.GetOrCreate(new GrainAddress("node-a", new GrainId("FastGrain", "1"), OwnerVersion: 1));
         var initialSlow = directory.GetOrCreate(new GrainAddress("node-a", new GrainId("SlowGrain", "1"), OwnerVersion: 1));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(120));
+        timeProvider.Advance(TimeSpan.FromMilliseconds(120));
 
         var collected = await directory.CollectIdleAsync(TimeSpan.FromMilliseconds(300));
 

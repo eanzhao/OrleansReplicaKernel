@@ -13,6 +13,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
     private readonly object _lock = new();
     private readonly LocalCallbackDirectory _callbackDirectory;
+    private readonly TimeProvider _timeProvider;
     private readonly IReadOnlyDictionary<string, Func<object>> _grainFactories;
     private readonly IReadOnlyDictionary<string, GrainTypeCollectionPolicy> _grainCollectionPolicies;
     private readonly IReadOnlyDictionary<string, GrainTypeSchedulingPolicy> _grainSchedulingPolicies;
@@ -25,12 +26,14 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, Func<object>> grainFactories,
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
-        IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null)
+        IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null,
+        TimeProvider? timeProvider = null)
         : this(
             grainFactories,
             grainCollectionPolicies,
             callbackDirectory,
             grainSchedulingPolicies,
+            timeProvider,
             checkpoint: null)
     {
     }
@@ -40,11 +43,13 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
+        TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint? checkpoint)
     {
         _grainFactories = grainFactories;
         _grainCollectionPolicies = grainCollectionPolicies;
         _callbackDirectory = callbackDirectory;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _grainSchedulingPolicies = grainSchedulingPolicies ?? new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal);
 
         if (checkpoint is null)
@@ -125,7 +130,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
                 address.GrainId,
                 grainFactory(),
                 address.OwnerVersion,
-                ResolveSchedulingPolicy(address.GrainId.GrainType));
+                ResolveSchedulingPolicy(address.GrainId.GrainType),
+                _timeProvider);
             _fencedOwnerVersions[address.GrainId] = address.OwnerVersion;
 
             if (_pendingHandoffStates.TryGetValue(address.GrainId, out var pendingHandoff))
@@ -294,7 +300,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             throw new ArgumentOutOfRangeException(nameof(idleFor), "Idle window must be non-negative.");
         }
 
-        var utcNow = DateTimeOffset.UtcNow;
+        var utcNow = _timeProvider.GetUtcNow();
         List<ActivationEntry> collected = [];
 
         lock (_lock)
@@ -367,8 +373,9 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
+        TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint checkpoint)
-        => new(grainFactories, grainCollectionPolicies, callbackDirectory, grainSchedulingPolicies, checkpoint);
+        => new(grainFactories, grainCollectionPolicies, callbackDirectory, grainSchedulingPolicies, timeProvider, checkpoint);
 
     private TimeSpan ResolveIdleWindow(string grainType, TimeSpan defaultIdleWindow)
     {

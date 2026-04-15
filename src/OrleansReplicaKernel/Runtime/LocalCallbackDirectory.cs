@@ -7,7 +7,13 @@ namespace OrleansReplicaKernel.Runtime;
 public sealed class LocalCallbackDirectory : IAsyncDisposable
 {
     private readonly object _lock = new();
+    private readonly TimeProvider _timeProvider;
     private readonly Dictionary<GrainId, ActivationEntry> _callbacks = new();
+
+    public LocalCallbackDirectory(TimeProvider? timeProvider = null)
+    {
+        _timeProvider = timeProvider ?? TimeProvider.System;
+    }
 
     public GrainId Register(string nodeName, string callbackType, object implementation)
     {
@@ -16,7 +22,8 @@ public sealed class LocalCallbackDirectory : IAsyncDisposable
             grainId,
             implementation,
             ownerVersion: 0,
-            GrainTypeSchedulingPolicy.Default);
+            schedulingPolicy: GrainTypeSchedulingPolicy.Default,
+            timeProvider: _timeProvider);
 
         lock (_lock)
         {

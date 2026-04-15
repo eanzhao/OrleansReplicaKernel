@@ -3,6 +3,7 @@ namespace OrleansReplicaKernel.Runtime;
 internal sealed class ActivationTimerRegistration : IActivationTimerHandle
 {
     private readonly Guid _timerId;
+    private readonly TimeProvider _timeProvider;
     private readonly Func<CancellationToken, ValueTask> _onTick;
     private readonly Action<Guid> _onCompleted;
     private readonly CancellationTokenSource _cts = new();
@@ -14,6 +15,7 @@ internal sealed class ActivationTimerRegistration : IActivationTimerHandle
         string timerName,
         TimeSpan dueTime,
         TimeSpan? period,
+        TimeProvider timeProvider,
         Func<CancellationToken, ValueTask> onTick,
         Action<Guid> onCompleted)
     {
@@ -21,6 +23,7 @@ internal sealed class ActivationTimerRegistration : IActivationTimerHandle
         TimerName = timerName;
         DueTime = dueTime;
         Period = period;
+        _timeProvider = timeProvider;
         _onTick = onTick;
         _onCompleted = onCompleted;
         _loop = Task.Run(RunAsync);
@@ -53,7 +56,7 @@ internal sealed class ActivationTimerRegistration : IActivationTimerHandle
     {
         try
         {
-            await Task.Delay(DueTime, _cts.Token);
+            await Task.Delay(DueTime, _timeProvider, _cts.Token);
 
             while (!_cts.IsCancellationRequested)
             {
@@ -64,7 +67,7 @@ internal sealed class ActivationTimerRegistration : IActivationTimerHandle
                     break;
                 }
 
-                await Task.Delay(Period.Value, _cts.Token);
+                await Task.Delay(Period.Value, _timeProvider, _cts.Token);
             }
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested)

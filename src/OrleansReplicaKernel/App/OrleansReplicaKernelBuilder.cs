@@ -358,16 +358,16 @@ public sealed class OrleansReplicaKernelBuilder
         {
             var transport = new InProcessMessageTransport(membershipViews[currentNodeName], nodeRegistry);
             var locator = new DirectoryGrainLocator(grainDirectory);
-            var callbackDirectory = new LocalCallbackDirectory();
+            var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
             var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
                 .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));
             var activationDirectory = activationCheckpoint is null
                 ? new LocalActivationDirectory(
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
-                    callbackDirectory, grainPolicies.SchedulingPolicies)
+                    callbackDirectory, grainPolicies.SchedulingPolicies, _timeProvider)
                 : LocalActivationDirectory.Restore(
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
-                    callbackDirectory, grainPolicies.SchedulingPolicies, activationCheckpoint);
+                    callbackDirectory, grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint);
             var router = new LocalGrainRouter(currentNodeName, locator);
             var runtime = new InProcessRuntime(
                 currentNodeName, failureDetector, locator, router, activationDirectory,
