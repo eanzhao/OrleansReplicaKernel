@@ -7,17 +7,20 @@ namespace OrleansReplicaKernel.Tests.Routing;
 
 public sealed class LocalActivationDirectoryTests
 {
+    private static readonly DateTimeOffset DefaultUtc = new(2026, 04, 16, 0, 0, 0, TimeSpan.Zero);
+
     [Fact]
     public async Task StageHandoffState_AppliesToActivationCreatedLater()
     {
         var factory = new TrackingHandoffGrainFactory();
-        await using var directory = CreateDirectory(factory);
+        var timeProvider = new ManualTimeProvider(DefaultUtc);
+        await using var directory = CreateDirectory(factory, timeProvider);
         var grainId = new GrainId("TestGrain", "1");
         var address = new GrainAddress("node-a", grainId, OwnerVersion: 3);
 
         directory.StageHandoffState(
             address,
-            new ActivationHandoffRecord(grainId, nameof(HandoffTestGrain), 42, DateTimeOffset.UtcNow));
+            CreateHandoffRecord(grainId, 42, timeProvider.GetUtcNow()));
 
         directory.GetOrCreate(address);
 
@@ -29,17 +32,39 @@ public sealed class LocalActivationDirectoryTests
     public async Task StageHandoffState_AppliesImmediatelyToActiveActivationWithSameOwnerVersion()
     {
         var factory = new TrackingHandoffGrainFactory();
-        await using var directory = CreateDirectory(factory);
+        var timeProvider = new ManualTimeProvider(DefaultUtc);
+        await using var directory = CreateDirectory(factory, timeProvider);
         var grainId = new GrainId("TestGrain", "1");
         var address = new GrainAddress("node-a", grainId, OwnerVersion: 5);
 
         directory.GetOrCreate(address);
         directory.StageHandoffState(
             address,
-            new ActivationHandoffRecord(grainId, nameof(HandoffTestGrain), 99, DateTimeOffset.UtcNow));
+            CreateHandoffRecord(grainId, 99, timeProvider.GetUtcNow()));
 
         Assert.Single(factory.CreatedInstances);
         Assert.Equal(99, factory.CreatedInstances[0].State);
+    }
+
+    [Fact]
+    public async Task PrepareHandoffAsync_UsesConfiguredTimeProviderForCapturedUtc()
+    {
+        var timeProvider = new ManualTimeProvider(DefaultUtc);
+        var factory = new TrackingHandoffGrainFactory();
+        await using var directory = CreateDirectory(factory, timeProvider);
+        var grainId = new GrainId("TestGrain", "1");
+        var address = new GrainAddress("node-a", grainId, OwnerVersion: 5);
+
+        directory.GetOrCreate(address);
+        factory.CreatedInstances[0].ApplyHandoffState(42);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(80));
+
+        var handoff = await directory.PrepareHandoffAsync(address);
+
+        Assert.NotNull(handoff);
+        Assert.Equal(42, handoff.Payload);
+        Assert.Equal(timeProvider.GetUtcNow(), handoff.CapturedUtc);
     }
 
     [Fact]
@@ -72,6 +97,7 @@ public sealed class LocalActivationDirectoryTests
         }
 
         var restoredFactory = new TrackingHandoffGrainFactory();
+        var restoreTimeProvider = new ManualTimeProvider(DefaultUtc.AddHours(1));
         await using var restored = LocalActivationDirectory.Restore(
             new Dictionary<string, Func<object>>
             {
@@ -83,7 +109,7 @@ public sealed class LocalActivationDirectoryTests
             },
             new LocalCallbackDirectory(),
             grainSchedulingPolicies: null,
-            timeProvider: TimeProvider.System,
+            timeProvider: restoreTimeProvider,
             checkpoint);
 
         Assert.Throws<StaleGrainAddressException>(
@@ -134,7 +160,9 @@ public sealed class LocalActivationDirectoryTests
         Assert.Same(initialSlow, reusedSlow);
     }
 
-    private static LocalActivationDirectory CreateDirectory(TrackingHandoffGrainFactory factory)
+    private static LocalActivationDirectory CreateDirectory(
+        TrackingHandoffGrainFactory factory,
+        TimeProvider? timeProvider = null)
         => new(
             new Dictionary<string, Func<object>>
             {
@@ -144,7 +172,14 @@ public sealed class LocalActivationDirectoryTests
             {
                 ["TestGrain"] = new(null),
             },
-            new LocalCallbackDirectory());
+            new LocalCallbackDirectory(timeProvider),
+            timeProvider: timeProvider);
+
+    private static ActivationHandoffRecord CreateHandoffRecord(
+        GrainId grainId,
+        int payload,
+        DateTimeOffset capturedUtc)
+        => new(grainId, nameof(HandoffTestGrain), payload, capturedUtc);
 
     private sealed class TrackingHandoffGrainFactory
     {

@@ -1,9 +1,9 @@
 # 文档导航
 
-本目录包含 83 篇文档，分两个阶段：
+本目录包含 84 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
-- **阶段二（38-83）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
+- **阶段二（38-84）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
 
 ---
 
@@ -82,6 +82,7 @@
 | 81 | [Scheduler 测试同步去固定睡眠](81-scheduler-test-synchronization-without-fixed-sleeps.md) | ActivationScheduler 顺序测试开始用 dispatch opportunity 断言代替固定睡眠 |
 | 82 | [共享测试同步 Helper](82-shared-test-synchronization-helper-and-manual-time-progress.md) | test harness 开始用共享 helper 统一 dispatch/progress 同步，而不是散落的短睡眠 |
 | 83 | [Invocation 测试采用 Host Timing API](83-invocation-tests-adopt-host-timing-and-semantic-observation.md) | runtime tests 开始直接走 host timing/wait helper，而不是局部 sleep/stopwatch |
+| 84 | [Handoff Capture 测试采用受控时间](84-handoff-capture-tests-adopt-controlled-time.md) | routing/handoff tests 开始验证 capture timestamp 共享同一 TimeProvider |
 
 ### 二、调度与并发
 
@@ -199,6 +200,7 @@
 | 81 | [Scheduler 测试同步去固定睡眠](81-scheduler-test-synchronization-without-fixed-sleeps.md) | scheduler 顺序测试开始脱离固定 sleep-driven 验证 |
 | 82 | [共享测试同步 Helper](82-shared-test-synchronization-helper-and-manual-time-progress.md) | manual-time 与 scheduler tests 开始共享 dispatch/progress 同步 helper |
 | 83 | [Invocation 测试采用 Host Timing API](83-invocation-tests-adopt-host-timing-and-semantic-observation.md) | non-manual invocation tests 开始用 host timing/wait helper 收口观察等待 |
+| 84 | [Handoff Capture 测试采用受控时间](84-handoff-capture-tests-adopt-controlled-time.md) | local activation directory tests 开始对 warm handoff capture 时间做 deterministic 验证 |
 
 ### 九、生命周期与回收
 
@@ -392,3 +394,4 @@
 | 81 | Scheduler 测试同步去固定睡眠 | 设计 |
 | 82 | 共享测试同步 Helper | 设计 |
 | 83 | Invocation 测试采用 Host Timing API | 设计 |
+| 84 | Handoff Capture 测试采用受控时间 | 设计 |

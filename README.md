@@ -44,8 +44,8 @@
 │   ├── Runtime/      # 运行时核心：调用执行、传输层、Membership、故障检测
 │   ├── Demo/         # 示例 Grain 和模拟生成代码
 │   └── Program.cs    # 端到端演示入口
-├── test/             # 单元测试（60 个）
-└── docs/             # 完整文档（83 篇，见 docs/README.md）
+├── test/             # 单元测试（61 个）
+└── docs/             # 完整文档（84 篇，见 docs/README.md）
 ```
 
 ---
@@ -98,7 +98,7 @@ Response 回传（去重 / 超时丢弃 / Stale 过滤）→ 返回结果
 | **放置** | Least-Loaded 初始放置；Prefer-Local 提示；负载倾斜再均衡 |
 | **传输** | 同进程多节点模拟；支持延迟/丢包/重放/重复注入；注入延迟与 retry backoff 开始统一到 TimeProvider |
 | **Membership** | Probe → 故障检测 → 权威视图 → Gossip（fanout + 反熵）→ 稳定化；View Change 时间戳开始统一到 TimeProvider |
-| **Handoff** | Warm Handoff capture/apply；Quiescence/Drain；失败自动退回 Cold Path |
+| **Handoff** | Warm Handoff capture/apply；Quiescence/Drain；失败自动退回 Cold Path；capture 时间开始有受控验证 |
 | **回调** | Observer 模式；跨节点回调；Object Reference Rehydrate |
 | **Timer** | Activation 级 Timer；不越过独占 Turn；随 Activation 取消；Activation 本地时间开始统一到 TimeProvider |
 | **宿主** | Host 暴露当前 TimeProvider；提供 provider-aware delay/timeout/elapsed/wait helper；demo 与 runtime tests 的状态观察开始脱离固定睡眠 |
@@ -161,10 +161,10 @@ dotnet test
 
 ## 文档导航
 
-项目有 83 篇文档，分两大类：
+项目有 84 篇文档，分两大类：
 
 1. **Orleans 源码分析**（01-37）：逐模块拆解 Orleans 的实现，理解它为什么这么设计
-2. **复刻设计文档**（38-83）：每个子系统在新架构下应该怎么实现
+2. **复刻设计文档**（38-84）：每个子系统在新架构下应该怎么实现
 
 详细的阅读指南和分类索引见 [docs/README.md](docs/README.md)。
 
