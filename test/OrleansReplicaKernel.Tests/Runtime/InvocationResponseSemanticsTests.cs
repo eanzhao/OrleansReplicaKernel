@@ -2,8 +2,6 @@ using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Demo;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Tests.TestSupport;
-using System.Diagnostics;
-
 namespace OrleansReplicaKernel.Tests.Runtime;
 
 public sealed class InvocationResponseSemanticsTests
@@ -20,10 +18,13 @@ public sealed class InvocationResponseSemanticsTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => grain.PingSlowAsync("slow", 150, timeout.Token));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(200));
-
+        var dispositions = await host.WaitForAsync(
+                probe: () => ValueTask.FromResult(host.GetResponseDispositionSnapshot("dev-node-1")),
+                predicate: static snapshot => snapshot.LateResponses == 1,
+                timeout: TimeSpan.FromSeconds(1),
+                delayBetweenProbes: TimeSpan.FromMilliseconds(10))
+            .WaitAsync(TimeSpan.FromSeconds(1));
         var afterTimeout = await grain.PingAsync("after-timeout");
-        var dispositions = host.GetResponseDispositionSnapshot("dev-node-1");
 
         Assert.Equal("echo:seed:count=1", seed);
         Assert.Equal("echo:after-timeout:count=3", afterTimeout);
@@ -211,9 +212,12 @@ public sealed class InvocationResponseSemanticsTests
             TimeSpan.FromMilliseconds(120),
             "test drop and replay later");
         var afterReplay = await grain.PingAsync("after-replay");
-        await Task.Delay(TimeSpan.FromMilliseconds(160));
-
-        var dispositions = host.GetResponseDispositionSnapshot("dev-node-1");
+        var dispositions = await host.WaitForAsync(
+                probe: () => ValueTask.FromResult(host.GetResponseDispositionSnapshot("dev-node-1")),
+                predicate: static snapshot => snapshot.StaleResponses == 1,
+                timeout: TimeSpan.FromSeconds(1),
+                delayBetweenProbes: TimeSpan.FromMilliseconds(10))
+            .WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal("echo:seed:count=1", seed);
         Assert.Equal("echo:after-replay:count=2", afterReplay);
@@ -234,9 +238,12 @@ public sealed class InvocationResponseSemanticsTests
 
         host.DuplicateNextResponse("dev-node-2", TimeSpan.FromMilliseconds(100));
         var afterDuplicate = await grain.PingAsync("after-duplicate");
-        await Task.Delay(TimeSpan.FromMilliseconds(140));
-
-        var dispositions = host.GetResponseDispositionSnapshot("dev-node-1");
+        var dispositions = await host.WaitForAsync(
+                probe: () => ValueTask.FromResult(host.GetResponseDispositionSnapshot("dev-node-1")),
+                predicate: static snapshot => snapshot.DuplicateResponses == 1,
+                timeout: TimeSpan.FromSeconds(1),
+                delayBetweenProbes: TimeSpan.FromMilliseconds(10))
+            .WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal("echo:seed:count=1", seed);
         Assert.Equal("echo:after-duplicate:count=2", afterDuplicate);
@@ -400,8 +407,12 @@ public sealed class InvocationResponseSemanticsTests
         var grain = host.GetGrain<IEchoGrain>("timer-hold");
 
         var holdResult = await grain.HoldTurnWithTimerAsync("during-hold", holdDelayMs: 150, timerDelayMs: 30);
-        await Task.Delay(100);
-        var timerSnapshot = await grain.GetTimerSnapshotAsync();
+        var timerSnapshot = await host.WaitForAsync(
+                probe: () => new ValueTask<string>(grain.GetTimerSnapshotAsync()),
+                predicate: static snapshot => snapshot == "timer:during-hold:count=2",
+                timeout: TimeSpan.FromSeconds(1),
+                delayBetweenProbes: TimeSpan.FromMilliseconds(10))
+            .WaitAsync(TimeSpan.FromSeconds(1));
 
         Assert.Equal("hold:during-hold:count=1", holdResult);
         Assert.Equal("timer:during-hold:count=2", timerSnapshot);
@@ -496,7 +507,7 @@ public sealed class InvocationResponseSemanticsTests
 
         await grain.ArmOneShotTimerAsync("cancelled", 80);
         await host.DeactivateGrainAsync<IEchoGrain>("timer-deactivate");
-        await Task.Delay(140);
+        await host.DelayAsync(TimeSpan.FromMilliseconds(140));
 
         var afterDeactivate = await host.GetGrain<IEchoGrain>("timer-deactivate").GetTimerSnapshotAsync();
 
@@ -548,7 +559,7 @@ public sealed class InvocationResponseSemanticsTests
         await echo.PingAsync("seed");
         await counter.AddAsync(3);
 
-        await Task.Delay(TimeSpan.FromMilliseconds(150));
+        await host.DelayAsync(TimeSpan.FromMilliseconds(150));
         var collected = await host.CollectIdleGrainsAsync(TimeSpan.FromMilliseconds(300));
 
         var echoAfterCollect = await echo.PingAsync("after-collect");
@@ -584,16 +595,16 @@ public sealed class InvocationResponseSemanticsTests
     {
         await using var host = CreateHost();
         var echo = host.GetGrain<IEchoGrain>("interleaving");
-        var stopwatch = Stopwatch.StartNew();
+        var startedAt = host.GetTimestamp();
 
         var first = echo.PingSlowAsync("interleave-a", 150);
-        await Task.Delay(20);
+        await host.DelayAsync(TimeSpan.FromMilliseconds(20));
         var second = echo.PingSlowAsync("interleave-b", 150);
 
         var results = await Task.WhenAll(first, second);
-        stopwatch.Stop();
+        var elapsed = host.GetElapsedTime(startedAt);
 
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(260));
+        Assert.True(elapsed < TimeSpan.FromMilliseconds(260));
         Assert.Contains("echo:interleave-a:count=1", results);
         Assert.Contains("echo:interleave-b:count=2", results);
     }
@@ -616,10 +627,10 @@ public sealed class InvocationResponseSemanticsTests
         var echo = host.GetGrain<IEchoGrain>("interleaving-barrier");
 
         var first = echo.PingSlowAsync("slow-first", 150);
-        await Task.Delay(20);
+        await host.DelayAsync(TimeSpan.FromMilliseconds(20));
         var second = echo.PingAsync("exclusive-after-slow");
 
-        await Task.Delay(60);
+        await AsyncTestSync.YieldUntilDispatchAsync();
         Assert.False(second.IsCompleted);
 
         var results = await Task.WhenAll(first, second);
