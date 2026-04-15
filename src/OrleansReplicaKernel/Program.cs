@@ -83,7 +83,11 @@ try
         lateResponseTimeoutResult = exception.GetType().Name;
     }
 
-    await host.DelayAsync(TimeSpan.FromMilliseconds(200));
+    await host.WaitForAsync(
+        probe: () => ValueTask.FromResult(host.GetResponseDispositionSnapshot("dev-node-1")),
+        predicate: static snapshot => snapshot.LateResponses == 1,
+        timeout: TimeSpan.FromSeconds(1),
+        delayBetweenProbes: TimeSpan.FromMilliseconds(10));
     var lateResponseAfterTimeout = await lateResponseEcho.PingAsync("late-response-after-timeout");
 
     Console.WriteLine();
@@ -103,13 +107,21 @@ try
         TimeSpan.FromMilliseconds(150),
         "simulated dropped response that leaks back later");
     var responseOrderingAfterStaleReplay = await responseOrderingEcho.PingAsync("after-stale-response");
-    await host.DelayAsync(TimeSpan.FromMilliseconds(200));
+    await host.WaitForAsync(
+        probe: () => ValueTask.FromResult(host.GetResponseDispositionSnapshot("dev-node-1")),
+        predicate: static snapshot => snapshot.StaleResponses == 1,
+        timeout: TimeSpan.FromSeconds(1),
+        delayBetweenProbes: TimeSpan.FromMilliseconds(10));
 
     Console.WriteLine();
     TraceLog.Write("app", "duplicate the next successful response from dev-node-2 after the caller has already completed");
     host.DuplicateNextResponse("dev-node-2", TimeSpan.FromMilliseconds(120));
     var responseOrderingAfterDuplicate = await responseOrderingEcho.PingAsync("after-duplicate-response");
-    await host.DelayAsync(TimeSpan.FromMilliseconds(160));
+    await host.WaitForAsync(
+        probe: () => ValueTask.FromResult(host.GetResponseDispositionSnapshot("dev-node-1")),
+        predicate: static snapshot => snapshot.DuplicateResponses == 1,
+        timeout: TimeSpan.FromSeconds(1),
+        delayBetweenProbes: TimeSpan.FromMilliseconds(10));
 
     Console.WriteLine();
     TraceLog.Write("result", $"echo-response-ordering-seed = {responseOrderingSeed}");
@@ -174,8 +186,11 @@ try
         "app",
         "arm an activation-owned timer during an exclusive turn; the timer callback should wait behind the active turn instead of bypassing it");
     var timerHoldResult = await timerEcho.HoldTurnWithTimerAsync("during-hold", holdDelayMs: 150, timerDelayMs: 30);
-    await host.DelayAsync(TimeSpan.FromMilliseconds(100));
-    var timerSnapshot = await timerEcho.GetTimerSnapshotAsync();
+    var timerSnapshot = await host.WaitForAsync(
+        probe: () => new ValueTask<string>(timerEcho.GetTimerSnapshotAsync()),
+        predicate: static snapshot => snapshot == "timer:during-hold:count=2",
+        timeout: TimeSpan.FromSeconds(1),
+        delayBetweenProbes: TimeSpan.FromMilliseconds(10));
 
     Console.WriteLine();
     TraceLog.Write("result", $"echo-timer-hold-result = {timerHoldResult}");

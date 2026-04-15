@@ -147,6 +147,39 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task HostWaitForAsync_WithProbeDelay_UsesConfiguredTimeProvider()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(timeProvider, TimeSpan.FromMinutes(5));
+        var attempts = 0;
+
+        var waitTask = host.WaitForAsync(
+            probe: () => ValueTask.FromResult(++attempts >= 3),
+            predicate: static value => value,
+            timeout: TimeSpan.FromMilliseconds(80),
+            delayBetweenProbes: TimeSpan.FromMilliseconds(20));
+
+        await Task.Delay(20);
+        Assert.False(waitTask.IsCompleted);
+        Assert.Equal(1, attempts);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(19));
+        await Task.Delay(20);
+        Assert.False(waitTask.IsCompleted);
+        Assert.Equal(1, attempts);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+        await Task.Delay(20);
+        Assert.False(waitTask.IsCompleted);
+        Assert.Equal(2, attempts);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(20));
+        await waitTask.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(3, attempts);
+    }
+
+    [Fact]
     public async Task DroppedResponse_RetriesSameRequestId_WithoutReexecutingGrainMethod()
     {
         await using var host = CreateHost("dev-node-1", "dev-node-2");

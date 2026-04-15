@@ -1,9 +1,9 @@
 # 文档导航
 
-本目录包含 79 篇文档，分两个阶段：
+本目录包含 80 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
-- **阶段二（38-79）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
+- **阶段二（38-80）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
 
 ---
 
@@ -78,6 +78,7 @@
 | 77 | [TimeProvider Timestamp 与 Elapsed 收敛](77-timeprovider-timestamp-and-elapsed-observation-convergence.md) | elapsed 观测开始共享同一时间语义，不再依赖裸 Stopwatch |
 | 78 | [Host Timing Helper API](78-host-timing-helper-api-and-provider-aware-orchestration.md) | host 提供 provider-aware 的 delay/timeout/elapsed helper，收拢调用侧时间 API |
 | 79 | [Host Provider-Aware Wait](79-host-provider-aware-wait-and-condition-polling.md) | host 提供 provider-aware 的条件等待 helper，收拢调用侧轮询/观察逻辑 |
+| 80 | [Program 观察等待收敛](80-program-observation-waits-and-semantic-condition-sync.md) | demo 开始用语义化 wait 代替固定 observation sleep |
 
 ### 二、调度与并发
 
@@ -191,6 +192,7 @@
 | 77 | [TimeProvider Timestamp 与 Elapsed 收敛](77-timeprovider-timestamp-and-elapsed-observation-convergence.md) | manual time 现在也能提供一致的 elapsed/timestamp 观测 |
 | 78 | [Host Timing Helper API](78-host-timing-helper-api-and-provider-aware-orchestration.md) | host 开始提供显式的 provider-aware orchestration helper |
 | 79 | [Host Provider-Aware Wait](79-host-provider-aware-wait-and-condition-polling.md) | host 开始提供 provider-aware 的 wait/poll helper，统一条件等待语义 |
+| 80 | [Program 观察等待收敛](80-program-observation-waits-and-semantic-condition-sync.md) | demo 里的 observation wait 开始基于语义条件同步，而不是固定睡眠 |
 
 ### 九、生命周期与回收
 
@@ -380,3 +382,4 @@
 | 77 | TimeProvider Timestamp 与 Elapsed 收敛 | 设计 |
 | 78 | Host Timing Helper API | 设计 |
 | 79 | Host Provider-Aware Wait | 设计 |
+| 80 | Program 观察等待收敛 | 设计 |
