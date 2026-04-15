@@ -1,4 +1,4 @@
-# 62. Object Reference Factory Registry 与 Generated Rehydration
+# Object Reference 工厂注册表与生成式再水化（第六十二篇）
 
 ## 1. 这一篇补哪块
 

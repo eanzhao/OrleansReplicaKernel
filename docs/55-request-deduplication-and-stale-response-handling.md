@@ -1,4 +1,4 @@
-# 55. Request Deduplication、迟到响应与“同一个 RequestId 不能重复执行”
+# 请求去重、迟到响应与"同一个 RequestId 不能重复执行"（第五十五篇）
 
 ## 1. 这一篇要接哪根线
 

@@ -1,5 +1,9 @@
 # 部署与宿主启动链：`UseOrleans`、默认服务注册和 lifecycle stage 是怎么把 runtime 拉起来的（第二十一篇）
 
+这一篇专门讲 Orleans 的"出生过程"：从你写下 `builder.UseOrleans()` 开始，到整个 runtime 真正跑起来，中间到底发生了什么。
+
+如果你要复刻一版 Orleans，这篇应该放在调用链和调度之后看——因为你需要先知道"谁在跑"，再来理解"怎么把它跑起来"。
+
 ## 先说结论
 
 Orleans 的宿主层不是“顺手把 runtime 启一下”，而是整个系统的组合根。`UseOrleans` / `UseOrleansClient` 负责把 `HostBuilder`、`Configuration`、`IServiceCollection`、默认实现、配置绑定和生命周期阶段全部串起来，最后把前面那些 runtime 子系统真正拉起。
@@ -176,3 +180,18 @@ Orleans 的宿主配置主要落在 `Orleans` 这个配置节里。
 5. client 和 silo 的 host 模型要分开，只有同进程模式才允许显式合并。
 
 这篇只是开头，但它其实已经把 Orleans 的宿主真相说出来了：runtime 不是自己长出来的，是 host 层用一大串默认装配和生命周期阶段，一层层推上去的。
+
+## 推荐阅读顺序
+
+如果你要顺着源码把这条线吃透，建议按这个顺序读：
+
+1. `src/Orleans.Runtime/Hosting/OrleansSiloGenericHostExtensions.cs` — UseOrleans 入口
+2. `src/Orleans.Core/Hosting/OrleansClientGenericHostExtensions.cs` — UseOrleansClient 入口
+3. `src/Orleans.Runtime/Hosting/SiloBuilder.cs` — Silo 侧 builder
+4. `src/Orleans.Core/Core/ClientBuilder.cs` — Client 侧 builder
+5. `src/Orleans.Runtime/Hosting/DefaultSiloServices.cs` — Silo 默认装配总表
+6. `src/Orleans.Core/Core/DefaultClientServices.cs` — Client 默认装配总表
+7. `src/Orleans.Core/Lifecycle/ServiceLifecycleStage.cs` — 生命周期阶段定义
+8. `src/Orleans.Runtime/Silo/Silo.cs` — Silo 主体，订阅各阶段
+9. `src/Orleans.Runtime/Lifecycle/SiloLifecycleSubject.cs` — lifecycle 可观测性
+10. `src/Orleans.Core/Core/ClusterClient.cs` — Client 启动过程

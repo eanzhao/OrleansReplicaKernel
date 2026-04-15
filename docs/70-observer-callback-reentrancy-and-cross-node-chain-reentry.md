@@ -1,4 +1,4 @@
-# 70. Observer callback reentrancy 与 cross-node chain reentry
+# Observer Callback Reentrancy 与跨节点 Chain Reentry（第七十篇）
 
 这一篇接在 `69` 后面，看的是 request-chain reentrancy 真正碰到 callback/observer 时，会不会还成立。
 

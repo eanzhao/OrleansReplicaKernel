@@ -2,7 +2,7 @@
 
 这一篇承接前面的 [40-single-node-to-multi-node-plan.md](./40-single-node-to-multi-node-plan.md)、[41-distributed-directory-and-owner-model.md](./41-distributed-directory-and-owner-model.md)、[42-remote-forwarding-and-message-loop.md](./42-remote-forwarding-and-message-loop.md) 和 [43-failure-paths-timeouts-and-retries.md](./43-failure-paths-timeouts-and-retries.md)。
 
-40 讲的是怎么从单节点 toy 走向多节点。41 讲的是 `directory / owner / locator` 怎么切。42 讲的是 `message loop` 和远端转发。43 讲的是失败链、超时、重试和 invalidation 怎么分层。
+40 讲的是怎么从单节点原型走向多节点。41 讲的是 `directory / owner / locator` 怎么切。42 讲的是 `message loop` 和远端转发。43 讲的是失败链、超时、重试和 invalidation 怎么分层。
 
 但如果再往下走，有一层还是很容易写脏：
 
@@ -302,7 +302,7 @@ owner 不是免费换的。
 
 ## 9. 对现在这条路线的判断
 
-如果要继续从 toy 往前推，我的建议很明确：
+如果要继续从当前原型往前推，我的建议很明确：
 
 - membership 先只做节点集合和可见性
 - health 先只做可用 / 不可用

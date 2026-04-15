@@ -291,7 +291,7 @@ invalidation 的职责只是让旧地址不再可信。
 
 ---
 
-## 8. 对照现在的 toy runtime
+## 8. 对照当前的原型
 
 如果对照现在的 `OrleansReplicaKernel`，它已经把前半段做出来了：
 

@@ -1,4 +1,4 @@
-# 67. Grain Placement Hint Metadata 与 Prefer-Local Policy
+# Grain Placement Hint 元数据与 Prefer-Local 策略（第六十七篇）
 
 ## 1. 这一篇补哪块
 
@@ -37,7 +37,7 @@
 
 1. 足够真实，Orleans 本来就有类似语义
 2. 足够独立，不用先引进整套 placement strategy 系统
-3. 足够能验证，当前 toy runtime 里一眼就能看出结果
+3. 足够能验证，当前原型里一眼就能看出结果
 4. 足够能往后长，后面可以自然并到完整 grain manifest
 
 所以这次故意先只做 hint，不做整套 strategy。

@@ -1,4 +1,4 @@
-# 60. Transparent Observer References 与 Object Reference Boundaries
+# 透明 Observer 引用与 Object Reference 边界（第六十篇）
 
 ## 1. 这一篇补哪块
 

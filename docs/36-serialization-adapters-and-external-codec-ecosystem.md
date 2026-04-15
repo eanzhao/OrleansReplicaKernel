@@ -438,8 +438,8 @@ JSON、MessagePack、MemoryPack、Protobuf 这类能力都应该是：
 
 如果你是按“复刻一版 Orleans”的思路往下看，我建议顺序是：
 
-1. [03-codegen-proxy-invokable-serializer.md](/Users/zhaoyiqi/Code/orleans/docs/03-codegen-proxy-invokable-serializer.md)
-2. [04-serialization-runtime-chain.md](/Users/zhaoyiqi/Code/orleans/docs/04-serialization-runtime-chain.md)
+1. [03-codegen-proxy-invokable-serializer.md](./docs/03-codegen-proxy-invokable-serializer.md)
+2. [04-serialization-runtime-chain.md](./docs/04-serialization-runtime-chain.md)
 3. 这一篇
 4. `src/Orleans.Serialization.SystemTextJson/SerializationHostingExtensions.cs`
 5. `src/Orleans.Serialization.MessagePack/MessagePackCodec.cs`

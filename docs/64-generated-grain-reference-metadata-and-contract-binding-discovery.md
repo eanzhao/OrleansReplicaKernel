@@ -1,4 +1,4 @@
-# 64. Generated Grain Reference Metadata 与 Contract Binding Discovery
+# 生成的 Grain Reference 元数据与契约绑定发现（第六十四篇）
 
 ## 1. 这一篇补哪块
 

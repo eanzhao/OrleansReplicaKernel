@@ -1,4 +1,4 @@
-# 66. Grain Collection Age Metadata 与 Idle Collection Policy
+# Grain 回收时间元数据与空闲回收策略（第六十六篇）
 
 ## 1. 这一篇补哪块
 

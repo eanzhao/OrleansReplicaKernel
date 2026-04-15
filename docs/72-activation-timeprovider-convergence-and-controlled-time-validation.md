@@ -1,4 +1,4 @@
-# 72. Activation TimeProvider 收敛与可控时间验证
+# Activation TimeProvider 收敛与可控时间验证（第七十二篇）
 
 这一篇接在 `58` 和 `71` 后面，补的是一条之前还没有完全收住的边界：
 

@@ -1,4 +1,4 @@
-# 68. Grain interleaving metadata 与 allow-interleaving turn
+# Grain Interleaving 元数据与 Allow-Interleaving Turn（第六十八篇）
 
 这一篇接在 `67` 后面，继续看 generated grain implementation metadata 怎么开始真正影响 runtime 行为。
 

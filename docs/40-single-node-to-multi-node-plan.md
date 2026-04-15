@@ -1,4 +1,4 @@
-# 从单节点 toy runtime 走向多节点 runtime：第一条分布式切入线怎么选（第四十篇）
+# 从单节点内核走向多节点 runtime：第一条分布式切入线怎么选（第四十篇）
 
 这一篇承接前面的 [38-replica-design-blueprint.md](./38-replica-design-blueprint.md) 和 [39-first-runtime-implementation-plan.md](./39-first-runtime-implementation-plan.md)，但不再停留在“应该怎么切”的抽象层。
 
@@ -147,7 +147,7 @@
 
 ### 4.3 Message Transport 的最小形态
 
-现在 toy runtime 的消息还是“对象内调用”。
+现在 当前原型 的消息还是“对象内调用”。
 
 多节点一旦进来，就必须补一个最小 transport 抽象，让消息可以：
 

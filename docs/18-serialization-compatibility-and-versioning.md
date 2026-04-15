@@ -550,7 +550,7 @@ Orleans 不是让所有旧新版本自然共存，而是把不兼容边界尽量
 
 如果想顺着这篇再往下啃，我建议按这个顺序：
 
-1. [04-serialization-runtime-chain.md](/Users/zhaoyiqi/Code/orleans/docs/04-serialization-runtime-chain.md)
+1. [04-serialization-runtime-chain.md](./04-serialization-runtime-chain.md)
 2. `src/Orleans.Serialization/TypeSystem/TypeConverter.cs`
 3. `src/Orleans.Serialization/TypeSystem/TypeCodec.cs`
 4. `src/Orleans.Serialization/Buffers/Writer.FieldHeader.cs`

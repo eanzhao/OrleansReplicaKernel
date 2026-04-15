@@ -1,4 +1,4 @@
-# 59. Callback Targets、Observers 与 Cross-Node Response Channel
+# 回调目标、Observer 与跨节点响应通道（第五十九篇）
 
 ## 1. 这一篇补哪块
 

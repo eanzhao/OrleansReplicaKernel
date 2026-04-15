@@ -2,7 +2,7 @@
 
 这一篇承接前面的 [40-single-node-to-multi-node-plan.md](./40-single-node-to-multi-node-plan.md)。
 
-40 讲的是“从今天这个 toy runtime 出发，怎么进多节点”。这一篇只盯住其中最绕、也最容易做脏的一层：
+40 讲的是“从当前原型出发，怎么进多节点”。这一篇只盯住其中最绕、也最容易做脏的一层：
 
 > directory、owner、locator、routing、地址失效、重新定位，它们到底是什么关系。
 

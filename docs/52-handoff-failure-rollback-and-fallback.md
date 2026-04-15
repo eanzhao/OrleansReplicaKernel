@@ -1,4 +1,4 @@
-# 52. handoff 失败时怎么退回 cold path：rollback 和 fallback 的边界
+# Handoff 失败时的退回与兜底：rollback 和 fallback 的边界（第五十二篇）
 
 这一篇承接前面的 [51-placement-state-transfer-and-warm-handoff.md](./51-placement-state-transfer-and-warm-handoff.md)。
 
@@ -263,7 +263,7 @@ checkpoint 是 restart recovery 的工具，不该被临时拉来参与在线 ha
 
 ## 5. OrleansReplicaKernel 这一版怎么落
 
-这次 toy 的实现，我故意把 fallback 做得很保守。
+这次原型的实现，我故意把 fallback 做得很保守。
 
 ### 5.1 Host 兜 capture / stage
 
@@ -294,7 +294,7 @@ checkpoint 是 restart recovery 的工具，不该被临时拉来参与在线 ha
 
 ### 5.3 EchoGrain 提供故障注入
 
-为了让这条链真的能演示出来，toy 给 `EchoGrain` 加了两个一次性故障注入点：
+为了让这条链真的能演示出来，当前实现给 `EchoGrain` 加了两个一次性故障注入点：
 
 - 下一次 capture 失败
 - 下一次 apply 失败

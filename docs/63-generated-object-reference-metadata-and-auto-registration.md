@@ -1,4 +1,4 @@
-# 63. Generated Object Reference Metadata 与 Auto Registration
+# 生成的 Object Reference 元数据与自动注册（第六十三篇）
 
 ## 1. 这一篇补哪块
 

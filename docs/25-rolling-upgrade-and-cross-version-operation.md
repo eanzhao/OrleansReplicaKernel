@@ -1,5 +1,9 @@
 # 跨版本升级与 Rolling Upgrade 实操链：版本选择、兼容 director 和旧新 activation 共存（第二十五篇）
 
+这一篇讲 Orleans 怎么在不停机的情况下把集群从旧版本滚到新版本。重点不是部署工具怎么用，而是 runtime 内部靠什么机制做到"旧节点还没退、新节点已经来"的时候不乱。
+
+如果你要复刻 Orleans 的版本升级能力，这篇是必读——因为 Orleans 不是靠一个大一统协议撑住升级的，而是靠很多个小的容错点慢慢把系统推到新状态。
+
 ## 先说结论
 
 Orleans 的 rolling upgrade 不是“把旧节点换成新节点”这么简单，而是一整套版本协商链：
@@ -141,17 +145,23 @@ Orleans 的版本升级链，最大的问题不是“不能用”，而是“散
 
 这样做的好处很简单：升级策略可以改，路由逻辑不乱；manifest 可以变，运行时边界不散；旧新共存可以保留，但不会把整个 runtime 搅成一锅粥。
 
+## 落点
+
+Orleans 的 rolling upgrade 本质上不是"二进制替换"，而是"版本协商 + 缓存失效 + 自我退场"的组合拳。集群里每一个参与路由的节点，都在持续做着"我还能不能接这个请求"的判断。
+
+如果只记一件事：**Orleans 的升级不是靠一个大开关，而是靠很多小决策点（版本选择器、兼容 director、activation 自检）的组合，让系统在升级期间逐步收敛到新状态。**
+
 ## 推荐接着看的源码
 
-- [`src/Orleans.Core/Configuration/Options/GrainVersioningOptions.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Core/Configuration/Options/GrainVersioningOptions.cs)
-- [`src/Orleans.Runtime/Versions/Selector/VersionDirectorManager.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Versions/Selector/VersionDirectorManager.cs)
-- [`src/Orleans.Runtime/Versions/Compatibility/CompatibilityDirectorManager.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Versions/Compatibility/CompatibilityDirectorManager.cs)
-- [`src/Orleans.Core/Manifest/GrainVersionManifest.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Core/Manifest/GrainVersionManifest.cs)
-- [`src/Orleans.Runtime/Placement/PlacementService.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Placement/PlacementService.cs)
-- [`src/Orleans.Runtime/Catalog/ActivationData.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Catalog/ActivationData.cs)
-- [`src/Orleans.Runtime/Manifest/ClusterManifestProvider.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Manifest/ClusterManifestProvider.cs)
-- [`src/Orleans.Core/Manifest/ClientClusterManifestProvider.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Core/Manifest/ClientClusterManifestProvider.cs)
-- [`src/Orleans.Runtime/Core/ManagementGrain.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Core/ManagementGrain.cs)
-- [`src/Orleans.Runtime/Silo/SiloControl.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Silo/SiloControl.cs)
-- [`src/Orleans.Runtime/Versions/GrainVersionStore.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Versions/GrainVersionStore.cs)
-- [`src/Orleans.Runtime/Placement/GrainMigratabilityChecker.cs`](/Users/zhaoyiqi/Code/orleans/src/Orleans.Runtime/Placement/GrainMigratabilityChecker.cs)
+- [`src/Orleans.Core/Configuration/Options/GrainVersioningOptions.cs`](./src/Orleans.Core/Configuration/Options/GrainVersioningOptions.cs)
+- [`src/Orleans.Runtime/Versions/Selector/VersionDirectorManager.cs`](./src/Orleans.Runtime/Versions/Selector/VersionDirectorManager.cs)
+- [`src/Orleans.Runtime/Versions/Compatibility/CompatibilityDirectorManager.cs`](./src/Orleans.Runtime/Versions/Compatibility/CompatibilityDirectorManager.cs)
+- [`src/Orleans.Core/Manifest/GrainVersionManifest.cs`](./src/Orleans.Core/Manifest/GrainVersionManifest.cs)
+- [`src/Orleans.Runtime/Placement/PlacementService.cs`](./src/Orleans.Runtime/Placement/PlacementService.cs)
+- [`src/Orleans.Runtime/Catalog/ActivationData.cs`](./src/Orleans.Runtime/Catalog/ActivationData.cs)
+- [`src/Orleans.Runtime/Manifest/ClusterManifestProvider.cs`](./src/Orleans.Runtime/Manifest/ClusterManifestProvider.cs)
+- [`src/Orleans.Core/Manifest/ClientClusterManifestProvider.cs`](./src/Orleans.Core/Manifest/ClientClusterManifestProvider.cs)
+- [`src/Orleans.Runtime/Core/ManagementGrain.cs`](./src/Orleans.Runtime/Core/ManagementGrain.cs)
+- [`src/Orleans.Runtime/Silo/SiloControl.cs`](./src/Orleans.Runtime/Silo/SiloControl.cs)
+- [`src/Orleans.Runtime/Versions/GrainVersionStore.cs`](./src/Orleans.Runtime/Versions/GrainVersionStore.cs)
+- [`src/Orleans.Runtime/Placement/GrainMigratabilityChecker.cs`](./src/Orleans.Runtime/Placement/GrainMigratabilityChecker.cs)

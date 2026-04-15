@@ -1,4 +1,4 @@
-# 69. Request-chain reentrancy 与 self-call 死锁规避
+# Request-Chain Reentrancy 与自调用死锁规避（第六十九篇）
 
 这一篇接在 `68` 后面，继续把调度层往 Orleans 的 actor 语义推进。
 

@@ -41,8 +41,8 @@ flowchart TD
 
 关键工程主要有两个：
 
-- [test/Benchmarks/Benchmarks.csproj](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Benchmarks.csproj)
-- [test/Benchmarks.AdoNet/Benchmarks.AdoNet.csproj](/Users/zhaoyiqi/Code/orleans/test/Benchmarks.AdoNet/Benchmarks.AdoNet.csproj)
+- [test/Benchmarks/Benchmarks.csproj](./test/Benchmarks/Benchmarks.csproj)
+- [test/Benchmarks.AdoNet/Benchmarks.AdoNet.csproj](./test/Benchmarks.AdoNet/Benchmarks.AdoNet.csproj)
 
 ### 2.1 基准入口是怎么组织的
 
@@ -66,10 +66,10 @@ flowchart TD
 
 这一层里最像 Orleans 自己“命根子”的，是序列化相关基准：
 
-- [test/Benchmarks/Serialization/FieldHeaderBenchmarks.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Serialization/FieldHeaderBenchmarks.cs)
-- [test/Benchmarks/Serialization/Comparison/ClassSerializeBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Serialization/Comparison/ClassSerializeBenchmark.cs)
-- [test/Benchmarks/Serialization/MegaGraphBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Serialization/MegaGraphBenchmark.cs)
-- [test/Benchmarks/Serialization/Comparison/CopierBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Serialization/Comparison/CopierBenchmark.cs)
+- [test/Benchmarks/Serialization/FieldHeaderBenchmarks.cs](./test/Benchmarks/Serialization/FieldHeaderBenchmarks.cs)
+- [test/Benchmarks/Serialization/Comparison/ClassSerializeBenchmark.cs](./test/Benchmarks/Serialization/Comparison/ClassSerializeBenchmark.cs)
+- [test/Benchmarks/Serialization/MegaGraphBenchmark.cs](./test/Benchmarks/Serialization/MegaGraphBenchmark.cs)
+- [test/Benchmarks/Serialization/Comparison/CopierBenchmark.cs](./test/Benchmarks/Serialization/Comparison/CopierBenchmark.cs)
 
 它们分别在压：
 
@@ -88,9 +88,9 @@ flowchart TD
 
 这条线最典型的是：
 
-- [test/Benchmarks/Ping/PingBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Ping/PingBenchmark.cs)
-- [test/Benchmarks/Ping/ConcurrentLoadGenerator.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Ping/ConcurrentLoadGenerator.cs)
-- [test/Benchmarks/MapReduce/MapReduceBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/MapReduce/MapReduceBenchmark.cs)
+- [test/Benchmarks/Ping/PingBenchmark.cs](./test/Benchmarks/Ping/PingBenchmark.cs)
+- [test/Benchmarks/Ping/ConcurrentLoadGenerator.cs](./test/Benchmarks/Ping/ConcurrentLoadGenerator.cs)
+- [test/Benchmarks/MapReduce/MapReduceBenchmark.cs](./test/Benchmarks/MapReduce/MapReduceBenchmark.cs)
 
 `PingBenchmark` 不只是测一次 `grain.Run()`，它还分了几种路径：
 
@@ -112,12 +112,12 @@ flowchart TD
 
 这几类也很关键：
 
-- [test/Benchmarks/GrainStorage/GrainStorageBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/GrainStorage/GrainStorageBenchmark.cs)
-- [test/Benchmarks/Transactions/TransactionBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Transactions/TransactionBenchmark.cs)
-- [test/Benchmarks/Dashboard/DashboardGrainBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Dashboard/DashboardGrainBenchmark.cs)
-- [test/Benchmarks/TopK/TopKBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/TopK/TopKBenchmark.cs)
-- [test/Benchmarks.AdoNet/Streaming/MessageQueueingBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks.AdoNet/Streaming/MessageQueueingBenchmark.cs)
-- [test/Benchmarks.AdoNet/Streaming/MessageDequeueingBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks.AdoNet/Streaming/MessageDequeueingBenchmark.cs)
+- [test/Benchmarks/GrainStorage/GrainStorageBenchmark.cs](./test/Benchmarks/GrainStorage/GrainStorageBenchmark.cs)
+- [test/Benchmarks/Transactions/TransactionBenchmark.cs](./test/Benchmarks/Transactions/TransactionBenchmark.cs)
+- [test/Benchmarks/Dashboard/DashboardGrainBenchmark.cs](./test/Benchmarks/Dashboard/DashboardGrainBenchmark.cs)
+- [test/Benchmarks/TopK/TopKBenchmark.cs](./test/Benchmarks/TopK/TopKBenchmark.cs)
+- [test/Benchmarks.AdoNet/Streaming/MessageQueueingBenchmark.cs](./test/Benchmarks.AdoNet/Streaming/MessageQueueingBenchmark.cs)
+- [test/Benchmarks.AdoNet/Streaming/MessageDequeueingBenchmark.cs](./test/Benchmarks.AdoNet/Streaming/MessageDequeueingBenchmark.cs)
 
 这些基准测的不是“功能有没有”，而是：
 
@@ -180,10 +180,10 @@ flowchart TD
 
 最像“性能回归门禁”的，是：
 
-- [test/Orleans.Runtime.Internal.Tests/TestRunners/GrainPersistenceTestRunner.cs](/Users/zhaoyiqi/Code/orleans/test/Orleans.Runtime.Internal.Tests/TestRunners/GrainPersistenceTestRunner.cs)
-- [test/Orleans.EventSourcing.Tests/EventSourcingTests/CountersGrainPerfTests.cs](/Users/zhaoyiqi/Code/orleans/test/Orleans.EventSourcing.Tests/EventSourcingTests/CountersGrainPerfTests.cs)
-- [test/Extensions/Orleans.Azure.Tests/AzureTableDataManagerStressTests.cs](/Users/zhaoyiqi/Code/orleans/test/Extensions/Orleans.Azure.Tests/AzureTableDataManagerStressTests.cs)
-- [test/Extensions/Orleans.AWS.Tests/StorageTests/DynamoDBStorageStressTests.cs](/Users/zhaoyiqi/Code/orleans/test/Extensions/Orleans.AWS.Tests/StorageTests/DynamoDBStorageStressTests.cs)
+- [test/Orleans.Runtime.Internal.Tests/TestRunners/GrainPersistenceTestRunner.cs](./test/Orleans.Runtime.Internal.Tests/TestRunners/GrainPersistenceTestRunner.cs)
+- [test/Orleans.EventSourcing.Tests/EventSourcingTests/CountersGrainPerfTests.cs](./test/Orleans.EventSourcing.Tests/EventSourcingTests/CountersGrainPerfTests.cs)
+- [test/Extensions/Orleans.Azure.Tests/AzureTableDataManagerStressTests.cs](./test/Extensions/Orleans.Azure.Tests/AzureTableDataManagerStressTests.cs)
+- [test/Extensions/Orleans.AWS.Tests/StorageTests/DynamoDBStorageStressTests.cs](./test/Extensions/Orleans.AWS.Tests/StorageTests/DynamoDBStorageStressTests.cs)
 
 `GrainPersistenceTestRunner` 这类代码很说明问题：
 
@@ -236,14 +236,14 @@ flowchart TD
 
 如果要顺着源码继续看，我建议按这个顺序走：
 
-- [test/Benchmarks/Program.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Program.cs)
-- [test/Benchmarks/Serialization/Utilities/BenchmarkConfig.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Serialization/Utilities/BenchmarkConfig.cs)
-- [test/Benchmarks/Serialization/FieldHeaderBenchmarks.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Serialization/FieldHeaderBenchmarks.cs)
-- [test/Benchmarks/Serialization/Comparison/ClassSerializeBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Serialization/Comparison/ClassSerializeBenchmark.cs)
-- [test/Benchmarks/Ping/PingBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Ping/PingBenchmark.cs)
-- [test/Benchmarks/GrainStorage/GrainStorageBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/GrainStorage/GrainStorageBenchmark.cs)
-- [test/Benchmarks/Transactions/TransactionBenchmark.cs](/Users/zhaoyiqi/Code/orleans/test/Benchmarks/Transactions/TransactionBenchmark.cs)
-- [test/Orleans.Runtime.Internal.Tests/TestRunners/GrainPersistenceTestRunner.cs](/Users/zhaoyiqi/Code/orleans/test/Orleans.Runtime.Internal.Tests/TestRunners/GrainPersistenceTestRunner.cs)
-- [test/Orleans.EventSourcing.Tests/EventSourcingTests/CountersGrainPerfTests.cs](/Users/zhaoyiqi/Code/orleans/test/Orleans.EventSourcing.Tests/EventSourcingTests/CountersGrainPerfTests.cs)
+- [test/Benchmarks/Program.cs](./test/Benchmarks/Program.cs)
+- [test/Benchmarks/Serialization/Utilities/BenchmarkConfig.cs](./test/Benchmarks/Serialization/Utilities/BenchmarkConfig.cs)
+- [test/Benchmarks/Serialization/FieldHeaderBenchmarks.cs](./test/Benchmarks/Serialization/FieldHeaderBenchmarks.cs)
+- [test/Benchmarks/Serialization/Comparison/ClassSerializeBenchmark.cs](./test/Benchmarks/Serialization/Comparison/ClassSerializeBenchmark.cs)
+- [test/Benchmarks/Ping/PingBenchmark.cs](./test/Benchmarks/Ping/PingBenchmark.cs)
+- [test/Benchmarks/GrainStorage/GrainStorageBenchmark.cs](./test/Benchmarks/GrainStorage/GrainStorageBenchmark.cs)
+- [test/Benchmarks/Transactions/TransactionBenchmark.cs](./test/Benchmarks/Transactions/TransactionBenchmark.cs)
+- [test/Orleans.Runtime.Internal.Tests/TestRunners/GrainPersistenceTestRunner.cs](./test/Orleans.Runtime.Internal.Tests/TestRunners/GrainPersistenceTestRunner.cs)
+- [test/Orleans.EventSourcing.Tests/EventSourcingTests/CountersGrainPerfTests.cs](./test/Orleans.EventSourcing.Tests/EventSourcingTests/CountersGrainPerfTests.cs)
 
 如果只想先抓一条主线，就先看序列化，再看 ping，再看 storage。这个顺序最不容易乱。

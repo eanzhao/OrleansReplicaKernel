@@ -1,4 +1,4 @@
-# 51. placement 之后的状态转移边界：warm handoff 该怎么切
+# Placement 之后的状态转移边界：Warm Handoff 该怎么切（第五十一篇）
 
 这一篇承接前面的 [50-placement-policy-rebalancing-and-handoff.md](./50-placement-policy-rebalancing-and-handoff.md)。
 
@@ -237,7 +237,7 @@ Orleans 本身没有把“在线 owner 切换 + 运行时状态转移”做成�
 
 ## 5. OrleansReplicaKernel 这一版怎么落
 
-这次 toy 里，我故意没有做“对象搬家”。
+这次原型里，我故意没有做“对象搬家”。
 
 做法是：
 
@@ -252,11 +252,11 @@ Orleans 本身没有把“在线 owner 切换 + 运行时状态转移”做成�
 - `CaptureHandoffState()`
 - `ApplyHandoffState(object? state)`
 
-也就是说，toy 先把这层边界立起来，而不是先追求 payload 的漂亮类型系统。
+也就是说，先把这层边界立起来，而不是先追求 payload 的漂亮类型系统。
 
 ### 5.2 handoff 记录是单独的 runtime 信封
 
-toy 新加了一份：
+新加了一份：
 
 - `ActivationHandoffRecord`
 

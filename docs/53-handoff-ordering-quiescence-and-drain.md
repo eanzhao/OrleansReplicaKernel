@@ -1,4 +1,4 @@
-# 53. handoff 之前的顺序边界：quiescence、drain 和 turn 完整性
+# Handoff 之前的顺序边界：Quiescence、Drain 与 Turn 完整性（第五十三篇）
 
 这一篇承接前面的 [52-handoff-failure-rollback-and-fallback.md](./52-handoff-failure-rollback-and-fallback.md)。
 
@@ -174,7 +174,7 @@ directory 不该自己去猜：
 
 ## 6. OrleansReplicaKernel 这一版怎么落
 
-这次 toy 里，我把这一步也故意做得很窄。
+这次原型里，我把这一步也故意做得很窄。
 
 ### 6.1 ActivationEntry 增加 quiescing 状态
 
@@ -187,7 +187,7 @@ directory 不该自己去猜：
 
 ### 6.2 等 pending turn 归零，再 capture
 
-toy 现在会在旧 activation 上：
+当前实现会在旧 activation 上：
 
 - 先等 `_pendingInvocationCount` 归零
 - 再 capture warm handoff state
@@ -235,7 +235,7 @@ Orleans 真正给你的经验，不是某个神奇算法，而是这种优先级
 
 ## 8. 这一步还故意没做什么
 
-这一版 toy 仍然没有做：
+当前版本仍然没有做：
 
 - 真正的双写/双读迁移窗口控制
 - 更细的 queued turn drain 策略

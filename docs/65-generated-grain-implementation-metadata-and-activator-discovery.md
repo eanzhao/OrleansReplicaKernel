@@ -1,4 +1,4 @@
-# 65. Generated Grain Implementation Metadata 与 Activator Discovery
+# 生成的 Grain Implementation 元数据与 Activator 发现（第六十五篇）
 
 ## 1. 这一篇补哪块
 

@@ -1,4 +1,4 @@
-# 54. Handoff Fencing、Owner Epoch 与 Stale Message Rejection
+# Handoff 围栏、Owner Epoch 与过期消息拒绝（第五十四篇）
 
 ## 1. 这一篇要解决什么
 

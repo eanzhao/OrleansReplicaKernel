@@ -1,4 +1,4 @@
-# 56. Response Completion、Timeout、Cancellation 与 Late Response Discard
+# 响应完成、超时、取消与迟到响应丢弃（第五十六篇）
 
 ## 1. 这一篇要补哪块空白
 

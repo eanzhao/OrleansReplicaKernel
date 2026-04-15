@@ -1,5 +1,9 @@
 # 管理面与 SystemTarget：ManagementGrain、系统消息和内部控制路径是怎么串起来的（第二十四篇）
 
+这一篇讲 Orleans 的"内部控制面"：集群管理、运行时统计、版本策略切换这些操作，不是靠 HTTP 管理接口做的，而是靠一套伪装成普通 grain 调用的内部 actor 系统。理解了这条线，你才能看清 Orleans 的 runtime 到底有哪些隐藏的内部路径。
+
+这篇适合在读完调用链（02）、目录（07）、membership（10）之后看，因为它依赖你对消息路由和 grain 生命周期的基本理解。
+
 ## 先说结论
 Orleans 的管理面，表面上看是一个 `ManagementGrain`，实际上背后跑的是一组内部 `SystemTarget`。`ManagementGrain` 负责对外提供管理 API，真正干活的是每个 silo 上的 `SiloControl`、`MembershipSystemTarget`、`RemoteGrainDirectory`、`ActivationMigrationManager` 这类系统目标。
 
