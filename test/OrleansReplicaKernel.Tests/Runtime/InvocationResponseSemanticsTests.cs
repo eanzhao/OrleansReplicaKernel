@@ -14,7 +14,7 @@ public sealed class InvocationResponseSemanticsTests
 
         var seed = await grain.PingAsync("seed");
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        using var timeout = host.CreateTimeoutSource(TimeSpan.FromMilliseconds(50));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => grain.PingSlowAsync("slow", 150, timeout.Token));
 
@@ -42,7 +42,7 @@ public sealed class InvocationResponseSemanticsTests
 
         var seed = await grain.PingAsync("seed");
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50), host.TimeProvider);
+        using var timeout = host.CreateTimeoutSource(TimeSpan.FromMilliseconds(50));
         var slowCall = grain.PingSlowAsync("slow", 150, timeout.Token);
 
         await AsyncTestSync.YieldUntilDispatchAsync();
@@ -639,7 +639,17 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     private static OrleansReplicaKernelHost CreateHost(params string[] peerNodeNames)
-        => CreateHost(TimeProvider.System, TimeSpan.FromMinutes(5), peerNodeNames);
+        => CreateHost(TimeSpan.FromMinutes(5), peerNodeNames);
+
+    private static OrleansReplicaKernelHost CreateHost(
+        TimeSpan responseHistoryRetention,
+        params string[] peerNodeNames)
+        => new OrleansReplicaKernelBuilder()
+            .AddGeneratedGrainImplementationsFromAssembly(typeof(EchoGrain).Assembly)
+            .WithResponseHistoryRetention(responseHistoryRetention)
+            .AddGeneratedGrainReferencesFromAssembly(typeof(EchoGrainReference).Assembly)
+            .AddGeneratedObjectReferencesFromAssembly(typeof(EchoObserverReference).Assembly)
+            .Build("dev-node-1", peerNodeNames);
 
     private static OrleansReplicaKernelHost CreateHost(
         TimeProvider timeProvider,
