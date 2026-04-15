@@ -33,6 +33,46 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task CallerTimeout_UsesConfiguredTimeProvider_AndStillDiscardsLateResponse()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        await using var host = CreateHost(timeProvider, TimeSpan.FromMinutes(5));
+        var grain = host.GetGrain<IEchoGrain>("late-response-manual-time");
+
+        var seed = await grain.PingAsync("seed");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50), host.TimeProvider);
+        var slowCall = grain.PingSlowAsync("slow", 150, timeout.Token);
+
+        await Task.Delay(20);
+        Assert.False(slowCall.IsCompleted);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(49));
+        await Task.Delay(20);
+        Assert.False(slowCall.IsCompleted);
+
+        var timedOut = Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await slowCall);
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+        await timedOut.WaitAsync(TimeSpan.FromSeconds(1));
+
+        timeProvider.Advance(TimeSpan.FromMilliseconds(100));
+
+        var dispositions = await WaitForAsync(
+            static state => Task.FromResult(state.GetResponseDispositionSnapshot("dev-node-1")),
+            static snapshot => snapshot.LateResponses == 1,
+            host,
+            TimeSpan.FromSeconds(1));
+        var afterTimeout = await grain.PingAsync("after-timeout");
+
+        Assert.Equal("echo:seed:count=1", seed);
+        Assert.Equal("echo:after-timeout:count=3", afterTimeout);
+        Assert.Equal(1, dispositions.LateResponses);
+        Assert.Equal(0, dispositions.StaleResponses);
+        Assert.Equal(0, dispositions.DuplicateResponses);
+    }
+
+    [Fact]
     public async Task DroppedResponse_RetriesSameRequestId_WithoutReexecutingGrainMethod()
     {
         await using var host = CreateHost("dev-node-1", "dev-node-2");

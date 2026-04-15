@@ -28,6 +28,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
 
     internal OrleansReplicaKernelHost(
         string nodeName,
+        TimeProvider timeProvider,
         IInvocationRuntime runtime,
         IGrainDirectory grainDirectory,
         IClusterMembership membership,
@@ -47,6 +48,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         IReadOnlyDictionary<Type, OrleansReplicaKernelRegistration> registrations)
     {
         _nodeName = nodeName;
+        TimeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _runtime = runtime;
         _grainDirectory = grainDirectory;
         _membership = membership;
@@ -65,6 +67,8 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         _managedNodes = managedNodes;
         _registrations = registrations;
     }
+
+    public TimeProvider TimeProvider { get; }
 
     public TContract GetGrain<TContract>(string key)
         where TContract : class

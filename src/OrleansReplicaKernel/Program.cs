@@ -44,7 +44,7 @@ try
     TraceLog.Write("app", "delay a request to dev-node-2, then move owner to dev-node-3 and force stale-message rejection + retry");
     host.DelayNextRequest("dev-node-2", TimeSpan.FromMilliseconds(150));
     var staleRetryTask = fenceEcho.PingAsync("after-stale-retry");
-    await Task.Delay(TimeSpan.FromMilliseconds(30));
+    await PauseAsync(TimeSpan.FromMilliseconds(30));
     await host.SetOwnerAsync<IEchoGrain>("fence", "dev-node-3");
     var fenceAfterStaleRetry = await staleRetryTask;
 
@@ -72,7 +72,7 @@ try
 
     Console.WriteLine();
     TraceLog.Write("app", "start a slow local request with a short caller timeout, then let the response arrive late and get discarded");
-    using var lateResponseTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+    using var lateResponseTimeout = CreateTimeout(TimeSpan.FromMilliseconds(50));
     string lateResponseTimeoutResult;
     try
     {
@@ -84,7 +84,7 @@ try
         lateResponseTimeoutResult = exception.GetType().Name;
     }
 
-    await Task.Delay(TimeSpan.FromMilliseconds(200));
+    await PauseAsync(TimeSpan.FromMilliseconds(200));
     var lateResponseAfterTimeout = await lateResponseEcho.PingAsync("late-response-after-timeout");
 
     Console.WriteLine();
@@ -104,13 +104,13 @@ try
         TimeSpan.FromMilliseconds(150),
         "simulated dropped response that leaks back later");
     var responseOrderingAfterStaleReplay = await responseOrderingEcho.PingAsync("after-stale-response");
-    await Task.Delay(TimeSpan.FromMilliseconds(200));
+    await PauseAsync(TimeSpan.FromMilliseconds(200));
 
     Console.WriteLine();
     TraceLog.Write("app", "duplicate the next successful response from dev-node-2 after the caller has already completed");
     host.DuplicateNextResponse("dev-node-2", TimeSpan.FromMilliseconds(120));
     var responseOrderingAfterDuplicate = await responseOrderingEcho.PingAsync("after-duplicate-response");
-    await Task.Delay(TimeSpan.FromMilliseconds(160));
+    await PauseAsync(TimeSpan.FromMilliseconds(160));
 
     Console.WriteLine();
     TraceLog.Write("result", $"echo-response-ordering-seed = {responseOrderingSeed}");
@@ -175,7 +175,7 @@ try
         "app",
         "arm an activation-owned timer during an exclusive turn; the timer callback should wait behind the active turn instead of bypassing it");
     var timerHoldResult = await timerEcho.HoldTurnWithTimerAsync("during-hold", holdDelayMs: 150, timerDelayMs: 30);
-    await Task.Delay(100);
+    await PauseAsync(TimeSpan.FromMilliseconds(100));
     var timerSnapshot = await timerEcho.GetTimerSnapshotAsync();
 
     Console.WriteLine();
@@ -189,7 +189,7 @@ try
         "arm an activation-owned timer, then deactivate the grain before it fires; the timer should be cancelled with the activation");
     await timerDeactivateEcho.ArmOneShotTimerAsync("cancelled", 80);
     await host.DeactivateGrainAsync<IEchoGrain>("timer-deactivate");
-    await Task.Delay(140);
+    await PauseAsync(TimeSpan.FromMilliseconds(140));
     var timerAfterDeactivate = await host.GetGrain<IEchoGrain>("timer-deactivate").GetTimerSnapshotAsync();
 
     Console.WriteLine();
@@ -210,7 +210,7 @@ try
     LogMembershipViews("membership-after-fanout-2");
 
     TraceLog.Write("app", $"wait for stabilization window {stabilizationWindow}");
-    await Task.Delay(stabilizationWindow + TimeSpan.FromMilliseconds(50));
+    await PauseAsync(stabilizationWindow + TimeSpan.FromMilliseconds(50));
     LogDeliveries("anti-entropy", await host.RunGossipTickAsync());
 
     Console.WriteLine();
@@ -275,7 +275,7 @@ try
         "run two PingSlowAsync turns against the same echo activation; generated metadata allows this method to interleave");
     var interleavingStopwatch = Stopwatch.StartNew();
     var interleavingFirst = interleavingEcho.PingSlowAsync("interleave-a", 150);
-    await Task.Delay(TimeSpan.FromMilliseconds(20));
+    await PauseAsync(TimeSpan.FromMilliseconds(20));
     var interleavingSecond = interleavingEcho.PingSlowAsync("interleave-b", 150);
     var interleavingResults = await Task.WhenAll(interleavingFirst, interleavingSecond);
     interleavingStopwatch.Stop();
@@ -329,7 +329,7 @@ try
     var drainEcho = host.GetGrain<IEchoGrain>("drain");
     TraceLog.Write("app", "start a slow echo turn, then move owner while the old activation is still busy");
     var inFlightDrainTurn = drainEcho.PingSlowAsync("drain-turn", 150);
-    await Task.Delay(TimeSpan.FromMilliseconds(30));
+    await PauseAsync(TimeSpan.FromMilliseconds(30));
     var drainMove = host.SetOwnerAsync<IEchoGrain>("drain", "dev-node-3").AsTask();
     await Task.WhenAll(inFlightDrainTurn, drainMove);
     var drainAfterHandoff = await drainEcho.PingAsync("after-drain-handoff");
@@ -339,7 +339,7 @@ try
     TraceLog.Write("result", $"echo-drain-after-handoff = {drainAfterHandoff}");
 
     TraceLog.Write("app", "wait for counter to become idle; echo keeps a longer per-grain collection age");
-    await Task.Delay(TimeSpan.FromMilliseconds(150));
+    await PauseAsync(TimeSpan.FromMilliseconds(150));
 
     var collectedIdle = await host.CollectIdleGrainsAsync(TimeSpan.FromMilliseconds(300));
 
@@ -379,6 +379,11 @@ OrleansReplicaKernelHost CreateHost(OrleansReplicaKernelRuntimeCheckpoint? check
 
     return builder.Build("dev-node-1", "dev-node-2", "dev-node-3");
 }
+
+CancellationTokenSource CreateTimeout(TimeSpan delay) => new(delay, host.TimeProvider);
+
+Task PauseAsync(TimeSpan delay, CancellationToken cancellationToken = default) =>
+    Task.Delay(delay, host.TimeProvider, cancellationToken);
 
 void LogMembershipViews(string label)
 {

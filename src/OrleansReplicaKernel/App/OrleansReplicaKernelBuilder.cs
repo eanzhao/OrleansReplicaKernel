@@ -204,6 +204,7 @@ public sealed class OrleansReplicaKernelBuilder
 
         return new OrleansReplicaKernelHost(
             nodeName,
+            _timeProvider,
             runtimes[nodeName],
             grainDirectory,
             membership,
