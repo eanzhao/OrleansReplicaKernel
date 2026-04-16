@@ -10,6 +10,8 @@ internal sealed class EchoObserverOnEchoInvokable : IInvokable
 
     public EchoObserverOnEchoInvokable(string value) => _value = value;
 
+    internal string Value => _value;
+
     public string InterfaceName => nameof(IEchoObserver);
 
     public string MethodName => nameof(IEchoObserver.OnEchoAsync);

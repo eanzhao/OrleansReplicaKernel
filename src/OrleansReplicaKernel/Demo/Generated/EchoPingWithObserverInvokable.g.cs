@@ -16,6 +16,16 @@ internal sealed class EchoPingWithObserverInvokable : IInvokable
         _observer = ObjectReferenceSerializer.Export(observer);
     }
 
+    internal EchoPingWithObserverInvokable(string text, ObjectReferenceData observer)
+    {
+        _text = text;
+        _observer = observer;
+    }
+
+    internal ObjectReferenceData Observer => _observer;
+
+    internal string Text => _text;
+
     public string InterfaceName => nameof(IEchoGrain);
 
     public string MethodName => nameof(IEchoGrain.PingWithObserverAsync);

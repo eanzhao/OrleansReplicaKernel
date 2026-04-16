@@ -4,11 +4,14 @@ using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
+using OrleansReplicaKernel.Serialization;
 
 namespace OrleansReplicaKernel.App;
 
 public sealed class OrleansReplicaKernelBuilder
 {
+    private readonly List<IBinaryCodec> _binaryCodecs = [];
+    private readonly HashSet<Assembly> _binaryCodecAssemblies = [];
     private readonly Dictionary<string, GrainImplementationRegistration> _grainImplementations = new(StringComparer.Ordinal);
     private readonly Dictionary<Type, GrainReferenceRegistration> _grainReferences = new();
     private readonly Dictionary<Type, ObjectReferenceRegistration> _objectReferenceRegistrations = new();
@@ -72,6 +75,7 @@ public sealed class OrleansReplicaKernelBuilder
     {
         ArgumentNullException.ThrowIfNull(assembly);
         _generatedGrainImplementationAssemblies.Add(assembly);
+        _binaryCodecAssemblies.Add(assembly);
         return this;
     }
 
@@ -79,6 +83,7 @@ public sealed class OrleansReplicaKernelBuilder
     {
         ArgumentNullException.ThrowIfNull(assembly);
         _generatedGrainReferenceAssemblies.Add(assembly);
+        _binaryCodecAssemblies.Add(assembly);
         return this;
     }
 
@@ -100,6 +105,20 @@ public sealed class OrleansReplicaKernelBuilder
     {
         ArgumentNullException.ThrowIfNull(assembly);
         _generatedObjectReferenceAssemblies.Add(assembly);
+        _binaryCodecAssemblies.Add(assembly);
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder AddBinaryCodec(IBinaryCodec codec)
+    {
+        _binaryCodecs.Add(codec ?? throw new ArgumentNullException(nameof(codec)));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder AddBinaryCodecsFromAssembly(Assembly assembly)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        _binaryCodecAssemblies.Add(assembly);
         return this;
     }
 
@@ -185,6 +204,7 @@ public sealed class OrleansReplicaKernelBuilder
         RegisterGeneratedObjectReferences();
 
         var grainPolicies = BuildGrainPolicies();
+        var messageSerializer = BuildMessageSerializer();
         var allNodeNames = ResolveNodeNames(nodeName, peerNodeNames);
         var (membership, membershipViews, membershipGossiper) = BuildMembership(allNodeNames);
         var nodeRegistry = new InProcessNodeRegistry();
@@ -196,7 +216,7 @@ public sealed class OrleansReplicaKernelBuilder
         var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
         var (locators, callbackDirectories, runtimes) =
             BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
-                grainDirectory, objectReferenceFactoryRegistry, activationDirectories);
+                grainDirectory, objectReferenceFactoryRegistry, activationDirectories, messageSerializer);
 
         var bindings = _grainReferences.ToDictionary(
             item => item.Key,
@@ -339,6 +359,23 @@ public sealed class OrleansReplicaKernelBuilder
             item => item.Value.ReferenceFactory,
             StringComparer.Ordinal));
 
+    private BinaryMessageSerializer BuildMessageSerializer()
+    {
+        var builder = new BinarySerializerBuilder();
+
+        foreach (var codec in _binaryCodecs)
+        {
+            builder.AddCodec(codec);
+        }
+
+        foreach (var assembly in _binaryCodecAssemblies)
+        {
+            builder.AddCodecsFromAssembly(assembly);
+        }
+
+        return new BinaryMessageSerializer(builder.Build());
+    }
+
     private (Dictionary<string, IGrainLocator> Locators,
         Dictionary<string, LocalCallbackDirectory> CallbackDirectories,
         Dictionary<string, InProcessRuntime> Runtimes) BuildNodeRuntimes(
@@ -349,7 +386,8 @@ public sealed class OrleansReplicaKernelBuilder
         IFailureDetector failureDetector,
         IGrainDirectory grainDirectory,
         ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
-        Dictionary<string, IActivationDirectory> activationDirectories)
+        Dictionary<string, IActivationDirectory> activationDirectories,
+        BinaryMessageSerializer messageSerializer)
     {
         var locators = new Dictionary<string, IGrainLocator>(StringComparer.Ordinal);
         var callbackDirectories = new Dictionary<string, LocalCallbackDirectory>(StringComparer.Ordinal);
@@ -357,7 +395,11 @@ public sealed class OrleansReplicaKernelBuilder
 
         foreach (var currentNodeName in allNodeNames)
         {
-            var transport = new InProcessMessageTransport(membershipViews[currentNodeName], nodeRegistry, _timeProvider);
+            var transport = new InProcessMessageTransport(
+                membershipViews[currentNodeName],
+                nodeRegistry,
+                messageSerializer,
+                _timeProvider);
             var locator = new DirectoryGrainLocator(grainDirectory);
             var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
             var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories

@@ -15,6 +15,10 @@ internal sealed class EchoPingSlowInvokable : IInvokable
         _delayMs = delayMs;
     }
 
+    internal int DelayMs => _delayMs;
+
+    internal string Text => _text;
+
     public string InterfaceName => nameof(IEchoGrain);
 
     public string MethodName => nameof(IEchoGrain.PingSlowAsync);

@@ -15,6 +15,10 @@ internal sealed class EchoArmOneShotTimerInvokable : IInvokable
         _delayMs = delayMs;
     }
 
+    internal int DelayMs => _delayMs;
+
+    internal string TimerName => _timerName;
+
     public string InterfaceName => nameof(IEchoGrain);
 
     public string MethodName => nameof(IEchoGrain.ArmOneShotTimerAsync);

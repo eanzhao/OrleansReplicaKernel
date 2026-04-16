@@ -17,6 +17,12 @@ internal sealed class EchoHoldTurnWithTimerInvokable : IInvokable
         _timerDelayMs = timerDelayMs;
     }
 
+    internal int HoldDelayMs => _holdDelayMs;
+
+    internal int TimerDelayMs => _timerDelayMs;
+
+    internal string TimerName => _timerName;
+
     public string InterfaceName => nameof(IEchoGrain);
 
     public string MethodName => nameof(IEchoGrain.HoldTurnWithTimerAsync);

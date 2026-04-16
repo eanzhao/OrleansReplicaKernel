@@ -13,6 +13,8 @@ internal sealed class EchoReentrantSelfCallInvokable : IInvokable
         _remaining = remaining;
     }
 
+    internal int Remaining => _remaining;
+
     public string InterfaceName => nameof(IEchoGrain);
 
     public string MethodName => nameof(IEchoGrain.ReentrantSelfCallAsync);

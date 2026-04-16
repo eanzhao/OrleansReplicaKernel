@@ -1,21 +1,25 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Messaging;
+using OrleansReplicaKernel.Serialization;
 
 namespace OrleansReplicaKernel.Runtime;
 
 public sealed class InProcessMessageTransport : IMessageTransport
 {
     private readonly IClusterMembershipView _membershipView;
+    private readonly BinaryMessageSerializer _messageSerializer;
     private readonly InProcessNodeRegistry _nodeRegistry;
     private readonly TimeProvider _timeProvider;
 
     public InProcessMessageTransport(
         IClusterMembershipView membershipView,
         InProcessNodeRegistry nodeRegistry,
+        BinaryMessageSerializer messageSerializer,
         TimeProvider? timeProvider = null)
     {
         _membershipView = membershipView;
         _nodeRegistry = nodeRegistry;
+        _messageSerializer = messageSerializer ?? throw new ArgumentNullException(nameof(messageSerializer));
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -42,24 +46,30 @@ public sealed class InProcessMessageTransport : IMessageTransport
             "transport",
             $"forward request {message.RequestId:N}/{message.AttemptId:N} {message.SourceNodeName} -> {message.Target.NodeName}");
 
+        var serializedRequest = _messageSerializer.SerializeInvocationMessage(message);
+        var wireRequest = _messageSerializer.DeserializeInvocationMessage(serializedRequest);
+
         if (dispatch.ResponseError is not null)
         {
             TraceLog.Write(
                 "transport",
                 $"inject failure response {message.RequestId:N} from {message.Target.NodeName}: {dispatch.ResponseError.GetType().Name}");
-            await dispatch.ResponseReceiver.ReceiveResponseAsync(
-                new InvocationResponseMessage(
+            var injectedFailure = new InvocationResponseMessage(
                     message.RequestId,
                     message.AttemptId,
                     message.AttemptSequence,
                     message.Target.NodeName,
                     null,
-                    dispatch.ResponseError),
+                    dispatch.ResponseError);
+            var serializedFailure = _messageSerializer.SerializeInvocationResponse(injectedFailure);
+            var wireFailure = _messageSerializer.DeserializeInvocationResponse(serializedFailure);
+            await dispatch.ResponseReceiver.ReceiveResponseAsync(
+                wireFailure,
                 CancellationToken.None);
             return;
         }
 
-        var response = await dispatch.RequestReceiver.ReceiveAsync(message, CancellationToken.None);
+        var response = await dispatch.RequestReceiver.ReceiveAsync(wireRequest, CancellationToken.None);
 
         if (dispatch.DroppedResponseReason is { } droppedResponseReason)
         {
@@ -83,13 +93,16 @@ public sealed class InProcessMessageTransport : IMessageTransport
             "transport",
             $"receive response {response.RequestId:N}/{response.AttemptId:N} from {response.ResponderNodeName}");
 
-        await dispatch.ResponseReceiver.ReceiveResponseAsync(response, CancellationToken.None);
+        var serializedResponse = _messageSerializer.SerializeInvocationResponse(response);
+        var wireResponse = _messageSerializer.DeserializeInvocationResponse(serializedResponse);
+
+        await dispatch.ResponseReceiver.ReceiveResponseAsync(wireResponse, CancellationToken.None);
 
         if (dispatch.DuplicateResponseDelay is { } duplicateDelay)
         {
             ReplayResponseLater(
                 dispatch.ResponseReceiver,
-                response,
+                wireResponse,
                 duplicateDelay,
                 "duplicate",
                 _timeProvider);

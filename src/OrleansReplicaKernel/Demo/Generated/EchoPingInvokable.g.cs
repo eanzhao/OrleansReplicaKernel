@@ -10,6 +10,8 @@ internal sealed class EchoPingInvokable : IInvokable
 
     public EchoPingInvokable(string text) => _text = text;
 
+    internal string Text => _text;
+
     public string InterfaceName => nameof(IEchoGrain);
 
     public string MethodName => nameof(IEchoGrain.PingAsync);

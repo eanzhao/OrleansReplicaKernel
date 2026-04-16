@@ -10,6 +10,8 @@ internal sealed class CounterAddInvokable : IInvokable
 
     public CounterAddInvokable(int delta) => _delta = delta;
 
+    internal int Delta => _delta;
+
     public string InterfaceName => nameof(ICounterGrain);
 
     public string MethodName => nameof(ICounterGrain.AddAsync);
