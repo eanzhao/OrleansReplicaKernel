@@ -13,8 +13,13 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
     private const int ActiveState = 0;
     private const int QuiescingState = 1;
     private const int DisposedState = 2;
+    private const int ActivationPendingState = 0;
+    private const int ActivationRunningState = 1;
+    private const int ActivationCompletedState = 2;
+    private const int ActivationFailedState = 3;
 
     private readonly object _instance;
+    private readonly object _activationLock = new();
     private readonly object _quiesceLock = new();
     private readonly object _timerLock = new();
     private readonly TimeProvider _timeProvider;
@@ -23,7 +28,10 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
     private readonly Dictionary<Guid, ActivationTimerRegistration> _timers = new();
     private long _lastTouchedUtcTicks;
     private int _lifecycleState;
+    private int _activationState;
     private int _pendingInvocationCount;
+    private TaskCompletionSource<bool>? _activationCompletion;
+    private IInvocationRuntime? _activationRuntime;
     private TaskCompletionSource<bool>? _quiescedCompletion;
 
     public ActivationEntry(
@@ -85,6 +93,8 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
 
         try
         {
+            _activationRuntime = runtime;
+            await EnsureActivatedAsync(runtime, cancellationToken);
             var allowInterleaving = _schedulingPolicy.AllowsInterleaving(message.Invokable.MethodName);
             return await _scheduler.EnqueueAsync(
                 $"{message.Invokable.InterfaceName}.{message.Invokable.MethodName}",
@@ -128,6 +138,8 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         {
             throw new ArgumentOutOfRangeException(nameof(period), "Timer period must be positive when provided.");
         }
+
+        EnsureActiveForTimerRegistration();
 
         var runtime = ActivationExecutionContext.CurrentRuntime
             ?? throw new InvalidOperationException("Activation timer registration requires an active invocation runtime.");
@@ -176,10 +188,12 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         return utcNow - LastTouchedUtc >= idleFor;
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => DisposeAsync(ActivationDeactivationReason.Shutdown);
+
+    public async ValueTask DisposeAsync(ActivationDeactivationReason reason)
     {
         Interlocked.Exchange(ref _lifecycleState, DisposedState);
-        TraceLog.Write("activation", $"deactivate {GrainId}");
+        TraceLog.Write("activation", $"deactivate {GrainId} reason={reason}");
 
         List<ActivationTimerRegistration> timers;
         lock (_timerLock)
@@ -193,6 +207,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
             await timer.DisposeAsync();
         }
 
+        await InvokeDeactivateAsync(reason);
         await _scheduler.DisposeAsync();
 
         switch (_instance)
@@ -293,6 +308,57 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         }
     }
 
+    private async ValueTask EnsureActivatedAsync(
+        IInvocationRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var state = Volatile.Read(ref _activationState);
+            if (state == ActivationCompletedState)
+            {
+                return;
+            }
+
+            if (state == ActivationFailedState)
+            {
+                throw CreateActivationFailureException();
+            }
+
+            Task completionTask;
+            var shouldRun = false;
+
+            lock (_activationLock)
+            {
+                switch (_activationState)
+                {
+                    case ActivationCompletedState:
+                        return;
+                    case ActivationFailedState:
+                        throw CreateActivationFailureException();
+                    case ActivationPendingState:
+                        _activationRuntime = runtime;
+                        _activationCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        _activationState = ActivationRunningState;
+                        completionTask = _activationCompletion.Task;
+                        shouldRun = true;
+                        break;
+                    default:
+                        completionTask = _activationCompletion?.Task ?? Task.CompletedTask;
+                        break;
+                }
+            }
+
+            if (shouldRun)
+            {
+                await RunActivationAsync(runtime);
+                return;
+            }
+
+            await completionTask.WaitAsync(cancellationToken);
+        }
+    }
+
     private void EnterActiveTurn()
     {
         while (true)
@@ -376,6 +442,111 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         finally
         {
             ExitActiveTurn();
+        }
+    }
+
+    private async ValueTask RunActivationAsync(IInvocationRuntime runtime)
+    {
+        var requestChainId = Guid.NewGuid();
+
+        try
+        {
+            await _scheduler.EnqueueAsync(
+                "$activate",
+                allowInterleaving: false,
+                requestChainId,
+                async turnToken =>
+                {
+                    await ActivationExecutionContext.RunAsync(
+                        runtime,
+                        GrainId,
+                        requestChainId,
+                        this,
+                        ResolveReminderRegistry(runtime),
+                        _timeProvider,
+                        async () =>
+                        {
+                            TraceLog.Write("activation", $"activate {GrainId}");
+                            if (_instance is IGrainLifecycleParticipant participant)
+                            {
+                                await participant.OnActivateAsync(turnToken);
+                            }
+
+                            return (object?)null;
+                        });
+
+                    return null;
+                },
+                CancellationToken.None);
+
+            lock (_activationLock)
+            {
+                _activationState = ActivationCompletedState;
+                _activationCompletion?.TrySetResult(true);
+            }
+        }
+        catch (Exception exception)
+        {
+            var activationFailure = exception as ActivationInitializationException
+                ?? new ActivationInitializationException(GrainId, innerException: exception);
+
+            lock (_activationLock)
+            {
+                _activationState = ActivationFailedState;
+                _activationCompletion?.TrySetException(activationFailure);
+            }
+
+            TraceLog.Write("activation", $"activate failed {GrainId}: {exception.Message}");
+            throw activationFailure;
+        }
+    }
+
+    private async ValueTask InvokeDeactivateAsync(ActivationDeactivationReason reason)
+    {
+        if (Volatile.Read(ref _activationState) != ActivationCompletedState
+            || _instance is not IGrainLifecycleParticipant participant)
+        {
+            return;
+        }
+
+        var runtime = _activationRuntime;
+        if (runtime is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await ActivationExecutionContext.RunAsync(
+                runtime,
+                GrainId,
+                Guid.NewGuid(),
+                this,
+                ResolveReminderRegistry(runtime),
+                _timeProvider,
+                async () =>
+                {
+                    await participant.OnDeactivateAsync(reason, CancellationToken.None);
+                    return (object?)null;
+                });
+        }
+        catch (Exception exception)
+        {
+            TraceLog.Write(
+                "activation",
+                $"deactivate hook failed {GrainId} reason={reason}: {exception.Message}");
+        }
+    }
+
+    private ActivationInitializationException CreateActivationFailureException()
+        => _activationCompletion?.Task.Exception?.InnerExceptions.OfType<ActivationInitializationException>().FirstOrDefault()
+            ?? new ActivationInitializationException(GrainId);
+
+    private void EnsureActiveForTimerRegistration()
+    {
+        if (Volatile.Read(ref _lifecycleState) != ActiveState)
+        {
+            throw new InvalidOperationException($"Activation '{GrainId}' is no longer active.");
         }
     }
 

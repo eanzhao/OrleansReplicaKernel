@@ -292,7 +292,9 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         }
     }
 
-    public async ValueTask<bool> DeactivateAsync(GrainAddress address)
+    public async ValueTask<bool> DeactivateAsync(
+        GrainAddress address,
+        ActivationDeactivationReason reason = ActivationDeactivationReason.Explicit)
     {
         ActivationEntry? activation;
         lock (_lock)
@@ -303,10 +305,13 @@ public sealed class LocalActivationDirectory : IActivationDirectory
                 return false;
             }
 
-            TraceLog.Write("directory", $"unregister activation {address.GrainId} from {address.NodeName}");
+            TraceLog.Write(
+                "directory",
+                $"unregister activation {address.GrainId} from {address.NodeName} reason={reason}");
         }
 
-        await activation.DisposeAsync();
+        await activation.QuiesceAsync();
+        await activation.DisposeAsync(reason);
         return true;
     }
 
@@ -340,13 +345,15 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
         foreach (var activation in collected)
         {
-            await activation.DisposeAsync();
+            await activation.QuiesceAsync();
+            await activation.DisposeAsync(ActivationDeactivationReason.IdleCollection);
         }
 
         return collected.Count;
     }
 
-    public async ValueTask<int> DeactivateAllAsync()
+    public async ValueTask<int> DeactivateAllAsync(
+        ActivationDeactivationReason reason = ActivationDeactivationReason.Shutdown)
     {
         List<ActivationEntry> activations;
         lock (_lock)
@@ -357,7 +364,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
         foreach (var activation in activations)
         {
-            await activation.DisposeAsync();
+            await activation.QuiesceAsync();
+            await activation.DisposeAsync(reason);
         }
 
         return activations.Count;

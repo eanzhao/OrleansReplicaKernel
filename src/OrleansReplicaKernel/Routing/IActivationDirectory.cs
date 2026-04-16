@@ -13,11 +13,14 @@ public interface IActivationDirectory : IAsyncDisposable
 
     void Fence(GrainAddress address);
 
-    ValueTask<bool> DeactivateAsync(GrainAddress address);
+    ValueTask<bool> DeactivateAsync(
+        GrainAddress address,
+        ActivationDeactivationReason reason = ActivationDeactivationReason.Explicit);
 
     ValueTask<int> CollectIdleAsync(TimeSpan idleFor);
 
-    ValueTask<int> DeactivateAllAsync();
+    ValueTask<int> DeactivateAllAsync(
+        ActivationDeactivationReason reason = ActivationDeactivationReason.Shutdown);
 
     ActivationDirectoryCheckpoint ExportCheckpoint(string nodeName);
 }

@@ -428,6 +428,17 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
                 result,
                 null);
         }
+        catch (ActivationInitializationException exception)
+        {
+            await CleanupFailedActivationAsync(routedMessage.Target, exception);
+            return new InvocationResponseMessage(
+                routedMessage.RequestId,
+                routedMessage.AttemptId,
+                routedMessage.AttemptSequence,
+                NodeName,
+                null,
+                exception);
+        }
         catch (Exception exception)
         {
             return new InvocationResponseMessage(
@@ -496,6 +507,27 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
                 message.AttemptSequence,
                 stopWaiting: true);
             throw;
+        }
+    }
+
+    private async ValueTask CleanupFailedActivationAsync(
+        GrainAddress address,
+        ActivationInitializationException exception)
+    {
+        try
+        {
+            var removed = await _activationDirectory.DeactivateAsync(
+                address,
+                ActivationDeactivationReason.ActivationFailed);
+            TraceLog.Write(
+                "activation",
+                $"cleanup failed activation {address.GrainId} on {address.NodeName} removed={removed}: {exception.Message}");
+        }
+        catch (Exception cleanupException)
+        {
+            TraceLog.Write(
+                "activation",
+                $"cleanup failed activation {address.GrainId} on {address.NodeName} errored: {cleanupException.Message}");
         }
     }
 

@@ -156,6 +156,43 @@ internal sealed class ActivationQuiescingExceptionBinaryCodec : BinaryObjectCode
     }
 }
 
+internal sealed class ActivationInitializationExceptionBinaryCodec : BinaryObjectCodec<ActivationInitializationException>
+{
+    public override string Alias => "orleans.exception.activation-initialization";
+
+    protected override ActivationInitializationException ReadFields(ref BinaryObjectReader reader, BinarySerializer serializer)
+    {
+        GrainId? grainId = null;
+        string? message = null;
+
+        while (reader.TryReadField(out var fieldId, out var payload))
+        {
+            switch (fieldId)
+            {
+                case 1:
+                    grainId = serializer.Read<GrainId>(payload);
+                    break;
+                case 2:
+                    message = serializer.Read<string>(payload);
+                    break;
+            }
+        }
+
+        return new ActivationInitializationException(
+            BinaryCodecRequired.Require(grainId, nameof(ActivationInitializationException.GrainId)),
+            message);
+    }
+
+    protected override void WriteFields(BinaryObjectWriter writer, ActivationInitializationException value, BinarySerializer serializer)
+    {
+        writer.WriteField(1, value.GrainId, serializer);
+        if (!string.IsNullOrEmpty(value.Message))
+        {
+            writer.WriteField(2, value.Message, serializer);
+        }
+    }
+}
+
 internal sealed class StaleGrainAddressExceptionBinaryCodec : BinaryObjectCodec<StaleGrainAddressException>
 {
     public override string Alias => "orleans.exception.stale-grain-address";

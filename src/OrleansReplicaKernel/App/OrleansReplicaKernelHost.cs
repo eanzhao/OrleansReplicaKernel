@@ -246,7 +246,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
 
         if (status != NodeHealthStatus.Healthy && _activationDirectories.TryGetValue(nodeName, out var activationDirectory))
         {
-            var shedCount = await activationDirectory.DeactivateAllAsync();
+            var shedCount = await activationDirectory.DeactivateAllAsync(ActivationDeactivationReason.Shutdown);
             TraceLog.Write("app", $"shed {shedCount} activations on unhealthy node {nodeName}");
         }
     }
@@ -532,7 +532,9 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         return new GrainId(registrationObject.GrainType, key);
     }
 
-    private async ValueTask<bool> DeactivateOnNodeAsync(GrainAddress address)
+    private async ValueTask<bool> DeactivateOnNodeAsync(
+        GrainAddress address,
+        ActivationDeactivationReason reason = ActivationDeactivationReason.Explicit)
     {
         if (!_activationDirectories.TryGetValue(address.NodeName, out var activationDirectory))
         {
@@ -540,7 +542,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
             return false;
         }
 
-        return await activationDirectory.DeactivateAsync(address);
+        return await activationDirectory.DeactivateAsync(address, reason);
     }
 
     private async ValueTask DeleteCallbackTargetAsync(GrainId grainId)
@@ -616,7 +618,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
 
         if (previous.OwnerNodeName != updated.OwnerNodeName)
         {
-            var deactivated = await DeactivateOnNodeAsync(sourceAddress);
+            var deactivated = await DeactivateOnNodeAsync(sourceAddress, ActivationDeactivationReason.Handoff);
             TraceLog.Write(
                 "handoff",
                 $"{grainId} {previous.OwnerNodeName} -> {updated.OwnerNodeName} reason={reason} shed-old-activation={deactivated}");
