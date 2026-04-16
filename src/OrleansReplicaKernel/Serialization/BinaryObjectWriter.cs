@@ -17,6 +17,14 @@ public sealed class BinaryObjectWriter
     public void WriteField<T>(int fieldId, T value, BinarySerializer serializer)
         => WriteField(fieldId, payload => serializer.Write(payload, value));
 
+    public void WriteNullableField<T>(int fieldId, T? value, BinarySerializer serializer)
+        where T : struct
+        => WriteField(fieldId, payload => serializer.WriteNullable(payload, value));
+
+    public void WriteOptionalField<T>(int fieldId, T? value, BinarySerializer serializer)
+        where T : class
+        => WriteField(fieldId, payload => serializer.WriteOptional(payload, value));
+
     public void WriteField(int fieldId, Action<BinaryBufferWriter> writePayload)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fieldId);

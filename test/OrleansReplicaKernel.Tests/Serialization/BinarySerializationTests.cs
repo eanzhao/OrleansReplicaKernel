@@ -47,7 +47,15 @@ public sealed class BinarySerializationTests
             CorrelationId: Guid.NewGuid(),
             Message: "custom-payload",
             Timestamp: new DateTimeOffset(2026, 4, 16, 12, 34, 56, TimeSpan.FromHours(8)),
-            AttemptHistory: [1, 2, 3, 5]);
+            AttemptHistory: [1, 2, 3, 5],
+            Metadata: new Dictionary<string, int>
+            {
+                ["attempts"] = 4,
+                ["fanout"] = 2
+            },
+            Tags: ["serialization", "runtime"],
+            Description: null,
+            RetryBudget: 9);
         var response = new InvocationResponseMessage(
             Guid.NewGuid(),
             Guid.NewGuid(),
@@ -63,6 +71,10 @@ public sealed class BinarySerializationTests
         Assert.Equal(payload.Message, restoredPayload.Message);
         Assert.Equal(payload.Timestamp, restoredPayload.Timestamp);
         Assert.Equal(payload.AttemptHistory, restoredPayload.AttemptHistory);
+        Assert.Equal(payload.Metadata, restoredPayload.Metadata);
+        Assert.Equal(payload.Tags, restoredPayload.Tags);
+        Assert.Null(restoredPayload.Description);
+        Assert.Equal(payload.RetryBudget, restoredPayload.RetryBudget);
         Assert.Null(roundTripped.Error);
     }
 
@@ -131,7 +143,11 @@ public sealed class BinarySerializationTests
         Guid CorrelationId,
         string Message,
         DateTimeOffset Timestamp,
-        List<int> AttemptHistory);
+        List<int> AttemptHistory,
+        Dictionary<string, int> Metadata,
+        HashSet<string> Tags,
+        string? Description,
+        int? RetryBudget);
 
     private sealed class CustomPayloadCodec : BinaryObjectCodec<CustomPayload>
     {
@@ -143,6 +159,10 @@ public sealed class BinarySerializationTests
             string message = string.Empty;
             DateTimeOffset timestamp = default;
             List<int> attemptHistory = [];
+            Dictionary<string, int> metadata = [];
+            HashSet<string> tags = [];
+            string? description = null;
+            int? retryBudget = null;
 
             while (reader.TryReadField(out var fieldId, out var payload))
             {
@@ -160,10 +180,22 @@ public sealed class BinarySerializationTests
                     case 4:
                         attemptHistory = serializer.Read<List<int>>(payload);
                         break;
+                    case 5:
+                        metadata = serializer.Read<Dictionary<string, int>>(payload);
+                        break;
+                    case 6:
+                        tags = serializer.Read<HashSet<string>>(payload);
+                        break;
+                    case 7:
+                        description = serializer.ReadOptional<string>(payload);
+                        break;
+                    case 8:
+                        retryBudget = serializer.ReadNullable<int>(payload);
+                        break;
                 }
             }
 
-            return new CustomPayload(correlationId, message, timestamp, attemptHistory);
+            return new CustomPayload(correlationId, message, timestamp, attemptHistory, metadata, tags, description, retryBudget);
         }
 
         protected override void WriteFields(BinaryObjectWriter writer, CustomPayload value, BinarySerializer serializer)
@@ -172,6 +204,10 @@ public sealed class BinarySerializationTests
             writer.WriteField(2, value.Message, serializer);
             writer.WriteField(3, value.Timestamp, serializer);
             writer.WriteField(4, value.AttemptHistory, serializer);
+            writer.WriteField(5, value.Metadata, serializer);
+            writer.WriteField(6, value.Tags, serializer);
+            writer.WriteOptionalField(7, value.Description, serializer);
+            writer.WriteNullableField(8, value.RetryBudget, serializer);
         }
     }
 

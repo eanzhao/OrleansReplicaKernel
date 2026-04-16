@@ -100,7 +100,7 @@ Response 回传（去重 / 超时丢弃 / Stale 过滤）→ 返回结果
 | **Membership** | Probe → 故障检测 → 权威视图 → Gossip（fanout + 反熵）→ 稳定化；View Change 时间戳开始统一到 TimeProvider |
 | **Handoff** | Warm Handoff capture/apply；Quiescence/Drain；失败自动退回 Cold Path；capture 时间开始有受控验证 |
 | **回调** | Observer 模式；跨节点回调；Object Reference Rehydrate |
-| **序列化** | 二进制序列化运行时；`InvocationMessage` / `InvocationResponseMessage` wire format；`IInvokable`、`GrainId`、`GrainAddress`、`ObjectReferenceData` codec；基础类型与集合 codec；自定义 codec 注册；新增字段可跳过的版本容忍 |
+| **序列化** | 二进制序列化运行时；`InvocationMessage` / `InvocationResponseMessage` wire format；`IInvokable`、`GrainId`、`GrainAddress`、`ObjectReferenceData` codec；基础类型与集合 codec（List/Array/Dictionary/HashSet）；自定义 codec 注册；可选/nullable 字段支持；新增字段可跳过的版本容忍 |
 | **Timer** | Activation 级 Timer；不越过独占 Turn；随 Activation 取消；Activation 本地时间开始统一到 TimeProvider |
 | **宿主** | Host 暴露当前 TimeProvider；提供 provider-aware delay/timeout/elapsed/wait helper；demo 与 runtime tests 的状态观察开始脱离固定睡眠 |
 | **元数据** | 生成 Attribute + 程序集扫描，自动发现 Grain 实现/引用/对象引用 |

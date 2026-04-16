@@ -75,6 +75,50 @@ public sealed class BinarySerializer
         return value;
     }
 
+    public T? ReadNullable<T>(BinaryBufferReader reader)
+        where T : struct
+    {
+        var localReader = reader;
+        return ReadNullable<T>(ref localReader);
+    }
+
+    public T? ReadNullable<T>(ref BinaryBufferReader reader)
+        where T : struct
+    {
+        if (!reader.ReadBoolean())
+        {
+            return null;
+        }
+
+        var payloadLength = checked((int)reader.ReadVarUInt32());
+        var payload = reader.ReadSubReader(payloadLength);
+        var value = GetCodec<T>().Read(ref payload, this);
+        payload.EnsureFullyConsumed();
+        return value;
+    }
+
+    public T? ReadOptional<T>(BinaryBufferReader reader)
+        where T : class
+    {
+        var localReader = reader;
+        return ReadOptional<T>(ref localReader);
+    }
+
+    public T? ReadOptional<T>(ref BinaryBufferReader reader)
+        where T : class
+    {
+        if (!reader.ReadBoolean())
+        {
+            return null;
+        }
+
+        var payloadLength = checked((int)reader.ReadVarUInt32());
+        var payload = reader.ReadSubReader(payloadLength);
+        var value = GetCodec<T>().Read(ref payload, this);
+        payload.EnsureFullyConsumed();
+        return value;
+    }
+
     public byte[] Serialize<T>(T value)
     {
         var writer = new BinaryBufferWriter();
@@ -110,6 +154,40 @@ public sealed class BinarySerializer
 
         var payload = new BinaryBufferWriter();
         codec.WriteUntyped(payload, value, this);
+        writer.WriteVarUInt32((uint)payload.WrittenCount);
+        writer.WriteBytes(payload.WrittenSpan);
+    }
+
+    public void WriteNullable<T>(BinaryBufferWriter writer, T? value)
+        where T : struct
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteBoolean(value.HasValue);
+        if (!value.HasValue)
+        {
+            return;
+        }
+
+        var payload = new BinaryBufferWriter();
+        GetCodec<T>().Write(payload, value.Value, this);
+        writer.WriteVarUInt32((uint)payload.WrittenCount);
+        writer.WriteBytes(payload.WrittenSpan);
+    }
+
+    public void WriteOptional<T>(BinaryBufferWriter writer, T? value)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteBoolean(value is not null);
+        if (value is null)
+        {
+            return;
+        }
+
+        var payload = new BinaryBufferWriter();
+        GetCodec<T>().Write(payload, value, this);
         writer.WriteVarUInt32((uint)payload.WrittenCount);
         writer.WriteBytes(payload.WrittenSpan);
     }
@@ -202,6 +280,27 @@ public sealed class BinarySerializer
             return ListBinaryCodec.Create(elementCodec);
         }
 
+        if (alias.StartsWith(DictionaryBinaryCodec.Prefix, StringComparison.Ordinal))
+        {
+            var pairAliases = alias[DictionaryBinaryCodec.Prefix.Length..];
+            var separatorIndex = pairAliases.IndexOf('|');
+            if (separatorIndex <= 0 || separatorIndex == pairAliases.Length - 1)
+            {
+                throw new InvalidOperationException($"Invalid dictionary codec alias '{alias}'.");
+            }
+
+            var keyCodec = ResolveCodec(pairAliases[..separatorIndex]);
+            var valueCodec = ResolveCodec(pairAliases[(separatorIndex + 1)..]);
+            return DictionaryBinaryCodec.Create(keyCodec, valueCodec);
+        }
+
+        if (alias.StartsWith(HashSetBinaryCodec.Prefix, StringComparison.Ordinal))
+        {
+            var elementAlias = alias[HashSetBinaryCodec.Prefix.Length..];
+            var elementCodec = ResolveCodec(elementAlias);
+            return HashSetBinaryCodec.Create(elementCodec);
+        }
+
         return null;
     }
 
@@ -217,6 +316,20 @@ public sealed class BinarySerializer
         {
             var elementCodec = ResolveCodec(type.GetGenericArguments()[0]);
             return ListBinaryCodec.Create(elementCodec);
+        }
+
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Dictionary<,>))
+        {
+            var arguments = type.GetGenericArguments();
+            var keyCodec = ResolveCodec(arguments[0]);
+            var valueCodec = ResolveCodec(arguments[1]);
+            return DictionaryBinaryCodec.Create(keyCodec, valueCodec);
+        }
+
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(HashSet<>))
+        {
+            var elementCodec = ResolveCodec(type.GetGenericArguments()[0]);
+            return HashSetBinaryCodec.Create(elementCodec);
         }
 
         if (typeof(InvalidOperationException).IsAssignableFrom(type)
@@ -326,6 +439,126 @@ internal sealed class ListBinaryCodec<T> : BinaryCodec<List<T>>
     }
 
     public override void Write(BinaryBufferWriter writer, List<T> value, BinarySerializer serializer)
+    {
+        writer.WriteVarUInt32((uint)value.Count);
+
+        foreach (var item in value)
+        {
+            var payload = new BinaryBufferWriter();
+            _elementCodec.Write(payload, item, serializer);
+            writer.WriteVarUInt32((uint)payload.WrittenCount);
+            writer.WriteBytes(payload.WrittenSpan);
+        }
+    }
+}
+
+internal static class DictionaryBinaryCodec
+{
+    public const string Prefix = "sys.dictionary|";
+
+    public static IBinaryCodec Create(IBinaryCodec keyCodec, IBinaryCodec valueCodec)
+    {
+        var codecType = typeof(DictionaryBinaryCodec<,>).MakeGenericType(keyCodec.ValueType, valueCodec.ValueType);
+        return (IBinaryCodec)Activator.CreateInstance(codecType, keyCodec, valueCodec)!;
+    }
+}
+
+internal sealed class DictionaryBinaryCodec<TKey, TValue> : BinaryCodec<Dictionary<TKey, TValue>>
+    where TKey : notnull
+{
+    private readonly IBinaryCodec<TKey> _keyCodec;
+    private readonly IBinaryCodec<TValue> _valueCodec;
+
+    public DictionaryBinaryCodec(IBinaryCodec<TKey> keyCodec, IBinaryCodec<TValue> valueCodec)
+    {
+        _keyCodec = keyCodec ?? throw new ArgumentNullException(nameof(keyCodec));
+        _valueCodec = valueCodec ?? throw new ArgumentNullException(nameof(valueCodec));
+    }
+
+    public override string Alias => $"{DictionaryBinaryCodec.Prefix}{_keyCodec.Alias}|{_valueCodec.Alias}";
+
+    public override Dictionary<TKey, TValue> Read(ref BinaryBufferReader reader, BinarySerializer serializer)
+    {
+        var count = checked((int)reader.ReadVarUInt32());
+        var items = new Dictionary<TKey, TValue>(count);
+
+        for (var i = 0; i < count; i++)
+        {
+            var keyLength = checked((int)reader.ReadVarUInt32());
+            var keyPayload = reader.ReadSubReader(keyLength);
+            var key = _keyCodec.Read(ref keyPayload, serializer);
+            keyPayload.EnsureFullyConsumed();
+
+            var valueLength = checked((int)reader.ReadVarUInt32());
+            var valuePayload = reader.ReadSubReader(valueLength);
+            var value = _valueCodec.Read(ref valuePayload, serializer);
+            valuePayload.EnsureFullyConsumed();
+
+            items.Add(key, value);
+        }
+
+        return items;
+    }
+
+    public override void Write(BinaryBufferWriter writer, Dictionary<TKey, TValue> value, BinarySerializer serializer)
+    {
+        writer.WriteVarUInt32((uint)value.Count);
+
+        foreach (var pair in value)
+        {
+            var keyPayload = new BinaryBufferWriter();
+            _keyCodec.Write(keyPayload, pair.Key, serializer);
+            writer.WriteVarUInt32((uint)keyPayload.WrittenCount);
+            writer.WriteBytes(keyPayload.WrittenSpan);
+
+            var valuePayload = new BinaryBufferWriter();
+            _valueCodec.Write(valuePayload, pair.Value, serializer);
+            writer.WriteVarUInt32((uint)valuePayload.WrittenCount);
+            writer.WriteBytes(valuePayload.WrittenSpan);
+        }
+    }
+}
+
+internal static class HashSetBinaryCodec
+{
+    public const string Prefix = "sys.hash-set|";
+
+    public static IBinaryCodec Create(IBinaryCodec elementCodec)
+    {
+        var codecType = typeof(HashSetBinaryCodec<>).MakeGenericType(elementCodec.ValueType);
+        return (IBinaryCodec)Activator.CreateInstance(codecType, elementCodec)!;
+    }
+}
+
+internal sealed class HashSetBinaryCodec<T> : BinaryCodec<HashSet<T>>
+    where T : notnull
+{
+    private readonly IBinaryCodec<T> _elementCodec;
+
+    public HashSetBinaryCodec(IBinaryCodec<T> elementCodec)
+    {
+        _elementCodec = elementCodec ?? throw new ArgumentNullException(nameof(elementCodec));
+    }
+
+    public override string Alias => $"{HashSetBinaryCodec.Prefix}{_elementCodec.Alias}";
+
+    public override HashSet<T> Read(ref BinaryBufferReader reader, BinarySerializer serializer)
+    {
+        var count = checked((int)reader.ReadVarUInt32());
+        var items = new HashSet<T>();
+
+        for (var i = 0; i < count; i++)
+        {
+            var itemLength = checked((int)reader.ReadVarUInt32());
+            var payload = reader.ReadSubReader(itemLength);
+            items.Add(_elementCodec.Read(ref payload, serializer));
+            payload.EnsureFullyConsumed();
+        }
+
+        return items;
+    }
+
+    public override void Write(BinaryBufferWriter writer, HashSet<T> value, BinarySerializer serializer)
     {
         writer.WriteVarUInt32((uint)value.Count);
 
