@@ -192,22 +192,14 @@ public sealed class LocalActivationDirectory : IActivationDirectory
                 _persistentStateFactory,
                 _transactionalStateFactory);
             var instance = grainFactory(activationContext);
-            try
-            {
-                activationContext.InitializePersistentStatesAsync().GetAwaiter().GetResult();
-            }
-            catch
-            {
-                DisposeFailedActivation(instance);
-                throw;
-            }
 
             var created = new ActivationEntry(
                 address.GrainId,
                 instance,
                 address.OwnerVersion,
                 ResolveSchedulingPolicy(address.GrainId.GrainType),
-                _timeProvider);
+                _timeProvider,
+                activationContext);
             _fencedOwnerVersions[address.GrainId] = address.OwnerVersion;
 
             if (_pendingHandoffStates.TryGetValue(address.GrainId, out var pendingHandoff))

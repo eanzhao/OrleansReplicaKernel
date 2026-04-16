@@ -41,9 +41,16 @@ public sealed class TransactionalState<TState> : ITransactionalState<TState>
 
         await _transactionCoordinator.ResolveParticipantAsync(_participant, cancellationToken);
 
+        var currentTransaction = TransactionContext.Current;
+        if (currentTransaction is not null)
+        {
+            await _transactionCoordinator.RegisterParticipantAsync(
+                currentTransaction.TransactionId, _participant, cancellationToken);
+        }
+
         var record = await ReadParticipantRecordAsync(cancellationToken);
-        if (TransactionContext.Current is { } transaction
-            && record.LockedTransactionId == transaction.TransactionId
+        if (currentTransaction is not null
+            && record.LockedTransactionId == currentTransaction.TransactionId
             && record.PendingWrite is not null)
         {
             return read(TransactionStateSerializer.Deserialize<TState>(record.PendingWrite.State));

@@ -15,6 +15,7 @@ internal sealed class LocalReminderService : IAsyncDisposable
     private readonly TimeSpan _scanInterval;
     private readonly HashSet<ReminderKey> _inflight = [];
     private readonly CancellationTokenSource _cts = new();
+    private readonly TaskCompletionSource _bound = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _loop;
     private IInvocationRuntime? _runtime;
 
@@ -42,6 +43,7 @@ internal sealed class LocalReminderService : IAsyncDisposable
     public void Bind(IInvocationRuntime runtime)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+        _bound.TrySetResult();
     }
 
     public IGrainReminderRegistry BindToGrain(GrainId grainId)
@@ -179,9 +181,23 @@ internal sealed class LocalReminderService : IAsyncDisposable
     {
         try
         {
+            await _bound.Task.WaitAsync(_cts.Token);
+
             while (!_cts.IsCancellationRequested)
             {
-                await ScanAsync(_cts.Token);
+                try
+                {
+                    await ScanAsync(_cts.Token);
+                }
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    TraceLog.Write("reminder", $"scan failed on {_localNodeName}: {exception.Message}");
+                }
+
                 await Task.Delay(_scanInterval, _timeProvider, _cts.Token);
             }
         }
@@ -215,7 +231,17 @@ internal sealed class LocalReminderService : IAsyncDisposable
                 }
             }
 
-            _ = FireReminderAsync(reminder, cancellationToken);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await FireReminderAsync(reminder, cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    TraceLog.Write("reminder", $"unhandled fire error {reminder.GrainId} reminder={reminder.ReminderName}: {exception.Message}");
+                }
+            });
         }
     }
 

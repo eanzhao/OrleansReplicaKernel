@@ -7,6 +7,7 @@ using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Scheduling;
 using OrleansReplicaKernel.Streaming;
+using OrleansReplicaKernel.Storage;
 using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Runtime;
@@ -34,6 +35,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
     private int _activationState;
     private int _pendingInvocationCount;
     private TaskCompletionSource<bool>? _activationCompletion;
+    private GrainActivationContext? _activationContext;
     private IInvocationRuntime? _activationRuntime;
     private TaskCompletionSource<bool>? _quiescedCompletion;
 
@@ -43,6 +45,17 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         long ownerVersion,
         GrainTypeSchedulingPolicy schedulingPolicy,
         TimeProvider timeProvider)
+        : this(grainId, instance, timeProvider.GetUtcNow(), ownerVersion, schedulingPolicy, timeProvider, false)
+    {
+    }
+
+    internal ActivationEntry(
+        GrainId grainId,
+        object instance,
+        long ownerVersion,
+        GrainTypeSchedulingPolicy schedulingPolicy,
+        TimeProvider timeProvider,
+        GrainActivationContext? activationContext)
         : this(
             grainId,
             instance,
@@ -52,6 +65,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
             timeProvider,
             isRecovered: false)
     {
+        _activationContext = activationContext;
     }
 
     private ActivationEntry(
@@ -490,6 +504,12 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         transaction: null,
                         async () =>
                         {
+                            if (_activationContext is not null)
+                            {
+                                await _activationContext.InitializePersistentStatesAsync(turnToken);
+                                _activationContext = null;
+                            }
+
                             TraceLog.Write("activation", $"activate {GrainId}");
                             if (_instance is IGrainLifecycleParticipant participant)
                             {

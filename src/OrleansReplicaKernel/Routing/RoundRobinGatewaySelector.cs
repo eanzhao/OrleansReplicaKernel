@@ -22,7 +22,7 @@ public sealed class RoundRobinGatewaySelector
     public string SelectNextGateway()
     {
         var index = Interlocked.Increment(ref _nextGatewayIndex);
-        return _gatewayNodeNames[index % _gatewayNodeNames.Length];
+        return _gatewayNodeNames[(index & 0x7FFF_FFFF) % _gatewayNodeNames.Length];
     }
 
     public IReadOnlyList<string> GetGatewayNodeNames()

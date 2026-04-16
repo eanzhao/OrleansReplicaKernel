@@ -184,6 +184,14 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
                 batch.NextSequenceToken,
                 _timeProvider.GetUtcNow(),
                 cancellationToken);
+            lock (_lock)
+            {
+                if (_streams.TryGetValue(streamId, out var streamState))
+                {
+                    streamState.PruneEventsUpTo(batch.NextSequenceToken);
+                }
+            }
+
             TraceLog.Write(
                 "stream",
                 $"deliver {streamId} -> {subscription.SubscriberGrainId} range={batch.StartSequenceToken}-{batch.NextSequenceToken - 1} count={batch.Events.Count}");
@@ -255,6 +263,11 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
         public long NextSequenceToken { get; set; } = 1;
 
         public List<StreamEventEnvelope> Events { get; } = [];
+
+        public void PruneEventsUpTo(long sequenceToken)
+        {
+            Events.RemoveAll(item => item.SequenceToken < sequenceToken);
+        }
 
         public StreamBatchEnvelope? CreateBatch(
             StreamId streamId,

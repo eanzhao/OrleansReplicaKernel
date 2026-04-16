@@ -217,6 +217,7 @@ public sealed class TelemetryIntegrationTests
         public void Dispose()
         {
             Interlocked.Exchange(ref _disposed, 1);
+            _listener.Dispose();
         }
     }
 

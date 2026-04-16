@@ -542,8 +542,8 @@ public sealed class TcpMessageTransport :
         private readonly CancellationTokenSource _connectionCancellation = new();
         private X509Certificate2? _remoteCertificate;
 
-        private DateTimeOffset _lastReceivedUtc;
-        private DateTimeOffset _lastSentUtc;
+        private long _lastReceivedUtcTicks;
+        private long _lastSentUtcTicks;
         private Task? _receiveLoop;
         private Task? _heartbeatLoop;
         private int _disposed;
@@ -559,8 +559,8 @@ public sealed class TcpMessageTransport :
             _stream = client.GetStream();
             _expectedRemoteNodeName = expectedRemoteNodeName;
             _onClosed = onClosed;
-            _lastReceivedUtc = owner.GetUtcNow();
-            _lastSentUtc = owner.GetUtcNow();
+            _lastReceivedUtcTicks = owner.GetUtcNow().UtcTicks;
+            _lastSentUtcTicks = owner.GetUtcNow().UtcTicks;
         }
 
         public string? RemoteNodeName { get; private set; }
@@ -633,7 +633,7 @@ public sealed class TcpMessageTransport :
                     kind,
                     payload,
                     cancellationToken,
-                    () => _lastSentUtc = _owner.GetUtcNow());
+                    () => Interlocked.Exchange(ref _lastSentUtcTicks, _owner.GetUtcNow().UtcTicks));
             }
             catch
             {
@@ -757,6 +757,14 @@ public sealed class TcpMessageTransport :
             }
 
             using var presentedCertificate = CloneCertificate(certificate);
+
+            var utcNow = DateTime.UtcNow;
+            if (presentedCertificate.NotAfter < utcNow || presentedCertificate.NotBefore > utcNow)
+            {
+                TraceLog.Write("tls", $"reject expired certificate: valid {presentedCertificate.NotBefore:O} to {presentedCertificate.NotAfter:O}");
+                return false;
+            }
+
             if (expectedRemoteNodeName is not null)
             {
                 return _owner._securityOptions.TryGetTrustedPeer(expectedRemoteNodeName, out var expectedPeer)
@@ -807,7 +815,7 @@ public sealed class TcpMessageTransport :
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     var frame = await _owner.ReadFrameAsync(_stream, cancellationToken);
-                    _lastReceivedUtc = _owner.GetUtcNow();
+                    Interlocked.Exchange(ref _lastReceivedUtcTicks, _owner.GetUtcNow().UtcTicks);
 
                     switch (frame.Kind)
                     {
@@ -874,7 +882,7 @@ public sealed class TcpMessageTransport :
                 {
                     await Task.Delay(_owner._heartbeatInterval, _owner._timeProvider, cancellationToken);
 
-                    if (_owner.GetUtcNow() - _lastReceivedUtc > _owner._heartbeatInterval * 4)
+                    if (_owner.GetUtcNow() - new DateTimeOffset(Interlocked.Read(ref _lastReceivedUtcTicks), TimeSpan.Zero) > _owner._heartbeatInterval * 4)
                     {
                         TraceLog.Write(
                             "transport",

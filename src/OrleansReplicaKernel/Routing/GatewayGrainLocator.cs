@@ -6,6 +6,8 @@ namespace OrleansReplicaKernel.Routing;
 
 public sealed class GatewayGrainLocator : IGrainLocator
 {
+    private const int MaxCachedAssignments = 10_000;
+
     private readonly object _lock = new();
     private readonly RoundRobinGatewaySelector _gatewaySelector;
     private readonly Dictionary<GrainId, string> _gatewayAssignments = new();
@@ -24,6 +26,11 @@ public sealed class GatewayGrainLocator : IGrainLocator
         {
             if (!_gatewayAssignments.TryGetValue(grainId, out gatewayNodeName!))
             {
+                if (_gatewayAssignments.Count >= MaxCachedAssignments)
+                {
+                    _gatewayAssignments.Clear();
+                }
+
                 gatewayNodeName = SelectGatewayForMiss(grainId);
                 _gatewayAssignments[grainId] = gatewayNodeName;
             }
