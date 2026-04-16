@@ -11,6 +11,7 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
     private const string AlwaysInterleaveAttributeName = "OrleansReplicaKernel.CodeGeneration.AlwaysInterleaveAttribute";
     private const string PreferLocalPlacementAttributeName = "OrleansReplicaKernel.CodeGeneration.PreferLocalPlacementAttribute";
     private const string CollectionAgeLimitAttributeName = "OrleansReplicaKernel.CodeGeneration.CollectionAgeLimitAttribute";
+    private const string GrainInterfaceVersionAttributeName = "OrleansReplicaKernel.Versioning.GrainInterfaceVersionAttribute";
 
     private static readonly DiagnosticDescriptor MissingGrainImplementationDescriptor = new(
         id: "ORKGEN001",
@@ -458,6 +459,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
         string? ResultTypeName,
         ImmutableArray<ParameterModel> Parameters,
         bool HasCancellationToken,
+        string InterfaceCompatibilityFamily,
+        int InterfaceVersion,
         string MethodAlias)
     {
         public static MethodModel? TryCreate(
@@ -574,6 +577,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
                 resultTypeName,
                 parameters.ToImmutable(),
                 hasCancellationToken,
+                ResolveInterfaceCompatibilityFamily(method.ContainingType),
+                ResolveInterfaceVersion(method.ContainingType),
                 ToKebabCase(methodStem));
         }
 
@@ -699,6 +704,12 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
             builder.Append("    public string InterfaceName => nameof(")
                 .Append(contractName)
                 .AppendLine(");");
+            builder.Append("    public string InterfaceCompatibilityFamily => \"")
+                .Append(EscapeStringLiteral(InterfaceCompatibilityFamily))
+                .AppendLine("\";");
+            builder.Append("    public int InterfaceVersion => ")
+                .Append(InterfaceVersion)
+                .AppendLine(";");
             builder.Append("    public string MethodName => nameof(")
                 .Append(contractName)
                 .Append('.')
@@ -888,6 +899,49 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
                 ReturnShape.ValueTaskOfT => $"{runtimeExpression}.InvokeAsync<{ResultTypeName}>(_grainId, invokable, cancellationToken)",
                 _ => throw new InvalidOperationException($"Unsupported return shape '{ReturnShape}'.")
             };
+        }
+
+        private static string ResolveInterfaceCompatibilityFamily(INamedTypeSymbol contractType)
+        {
+            var attribute = contractType.GetAttributes()
+                .FirstOrDefault(attribute =>
+                    string.Equals(
+                        attribute.AttributeClass?.ToDisplayString(),
+                        GrainInterfaceVersionAttributeName,
+                        StringComparison.Ordinal));
+            if (attribute is null)
+            {
+                return GetDefaultInterfaceCompatibilityFamily(contractType);
+            }
+
+            return attribute.ConstructorArguments[0].Value as string
+                   ?? GetDefaultInterfaceCompatibilityFamily(contractType);
+        }
+
+        private static int ResolveInterfaceVersion(INamedTypeSymbol contractType)
+        {
+            var attribute = contractType.GetAttributes()
+                .FirstOrDefault(attribute =>
+                    string.Equals(
+                        attribute.AttributeClass?.ToDisplayString(),
+                        GrainInterfaceVersionAttributeName,
+                        StringComparison.Ordinal));
+            if (attribute is null)
+            {
+                return 1;
+            }
+
+            return attribute.ConstructorArguments[1].Value is int version && version > 0
+                ? version
+                : 1;
+        }
+
+        private static string GetDefaultInterfaceCompatibilityFamily(INamedTypeSymbol contractType)
+        {
+            var namespaceName = GetNamespace(contractType);
+            return string.IsNullOrWhiteSpace(namespaceName)
+                ? contractType.Name
+                : namespaceName + "." + contractType.Name;
         }
     }
 
@@ -1132,6 +1186,11 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
         => type.ContainingNamespace.IsGlobalNamespace
             ? string.Empty
             : type.ContainingNamespace.ToDisplayString();
+
+    private static string EscapeStringLiteral(string value)
+        => value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"");
 
     private static string StripLeadingInterfacePrefix(string name)
         => name.Length > 1 && name[0] == 'I' && char.IsUpper(name[1])

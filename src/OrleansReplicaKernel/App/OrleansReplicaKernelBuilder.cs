@@ -14,6 +14,7 @@ using OrleansReplicaKernel.Serialization;
 using OrleansReplicaKernel.Storage;
 using OrleansReplicaKernel.Streaming;
 using OrleansReplicaKernel.Transactions;
+using OrleansReplicaKernel.Versioning;
 
 namespace OrleansReplicaKernel.App;
 
@@ -32,6 +33,7 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
     private readonly Dictionary<string, MemoryStreamProviderConfiguration> _memoryStreamProviders = new(StringComparer.Ordinal);
     private IGrainDirectoryTable? _grainDirectoryTable;
+    private IGrainInterfaceVersionTable? _grainInterfaceVersionTable;
     private ILoggerFactory? _loggerFactory;
     private IMembershipTable? _membershipTable;
     private IReminderTable? _reminderTable;
@@ -89,6 +91,25 @@ public sealed class OrleansReplicaKernelBuilder
             isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
+
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder AddGrainReference<TContract>(
+        string grainType,
+        Func<IInvocationRuntime, GrainId, TContract> referenceFactory)
+        where TContract : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(grainType);
+        ArgumentNullException.ThrowIfNull(referenceFactory);
+
+        AddGrainReference(
+            typeof(TContract),
+            grainType,
+            (runtime, grainId) => referenceFactory(runtime, grainId),
+            isGenerated: false,
+            replaceExisting: false,
+            sourceDescription: $"manual grain reference registration for '{typeof(TContract).Name}'");
 
         return this;
     }
@@ -303,6 +324,18 @@ public sealed class OrleansReplicaKernelBuilder
         return this;
     }
 
+    public OrleansReplicaKernelBuilder WithGrainInterfaceVersionTable(IGrainInterfaceVersionTable grainInterfaceVersionTable)
+    {
+        _grainInterfaceVersionTable = grainInterfaceVersionTable ?? throw new ArgumentNullException(nameof(grainInterfaceVersionTable));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseFileGrainInterfaceVersionTable(string path)
+    {
+        _grainInterfaceVersionTable = new FileGrainInterfaceVersionTable(path);
+        return this;
+    }
+
     public OrleansReplicaKernelBuilder WithReminderTable(IReminderTable reminderTable)
     {
         _reminderTable = reminderTable ?? throw new ArgumentNullException(nameof(reminderTable));
@@ -404,6 +437,10 @@ public sealed class OrleansReplicaKernelBuilder
         var messageSerializer = BuildMessageSerializer();
         var allNodeNames = ResolveNodeNames(nodeName, peerNodeNames);
         var (membership, membershipViews, membershipGossiper) = BuildMembership(nodeName, allNodeNames);
+        var grainInterfaceVersions = BuildGrainInterfaceVersions();
+        RegisterSupportedInterfaces(
+            grainInterfaceVersions,
+            _useTcpTransport ? [nodeName] : allNodeNames);
         var failureDetector = new ConsecutiveFailureDetector(membership);
         var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
         if (_useTcpTransport && _memoryStreamProviders.Count > 0)
@@ -420,6 +457,7 @@ public sealed class OrleansReplicaKernelBuilder
                 grainPolicies,
                 membership,
                 membershipViews,
+                grainInterfaceVersions,
                 membershipGossiper,
                 failureDetector,
                 persistentStateFactory,
@@ -432,10 +470,16 @@ public sealed class OrleansReplicaKernelBuilder
         var nodeRegistry = new InProcessNodeRegistry();
         var activationDirectories = new Dictionary<string, IActivationDirectory>(StringComparer.Ordinal);
         var (grainDirectory, loadProvider, rebalancingPolicy) =
-            BuildDirectory(nodeName, membership, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
+            BuildDirectory(
+                nodeName,
+                membership,
+                membershipViews[nodeName],
+                grainInterfaceVersions,
+                grainPolicies.PlacementHints,
+                activationDirectories);
         var probeService = new InProcessClusterProbeService(nodeName, membership, nodeRegistry, failureDetector);
         var (locators, callbackDirectories, runtimes) =
-            BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
+            BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, grainInterfaceVersions, nodeRegistry, failureDetector,
                 grainDirectory, persistentStateFactory, transactionalStateFactory, objectReferenceFactoryRegistry,
                 activationDirectories, messageSerializer);
         var streamProviders = BuildMemoryStreamProviders(messageSerializer.Serializer, runtimes[nodeName]);
@@ -735,6 +779,7 @@ public sealed class OrleansReplicaKernelBuilder
         string nodeName,
         IClusterMembership membership,
         IClusterMembershipView membershipView,
+        ClusterGrainInterfaceVersionManifest grainInterfaceVersions,
         IReadOnlyDictionary<string, GrainTypePlacementHint> placementHints,
         Dictionary<string, IActivationDirectory> activationDirectories)
     {
@@ -759,15 +804,28 @@ public sealed class OrleansReplicaKernelBuilder
                     placementPolicy,
                     loadProvider,
                     relocationPolicy,
-                    placementHints),
+                    placementHints,
+                    grainInterfaceVersions),
                 loadProvider,
                 rebalancingPolicy);
         }
 
         var directory = checkpoint is null
-            ? new InMemoryGrainDirectory(membershipView, placementPolicy, loadProvider, relocationPolicy, placementHints)
-            : InMemoryGrainDirectory.Restore(membershipView, placementPolicy, loadProvider, relocationPolicy,
-                checkpoint, placementHints);
+            ? new InMemoryGrainDirectory(
+                membershipView,
+                placementPolicy,
+                loadProvider,
+                relocationPolicy,
+                placementHints,
+                grainInterfaceVersions)
+            : InMemoryGrainDirectory.Restore(
+                membershipView,
+                placementPolicy,
+                loadProvider,
+                relocationPolicy,
+                checkpoint,
+                placementHints,
+                grainInterfaceVersions);
 
         return (directory, loadProvider, rebalancingPolicy);
     }
@@ -788,6 +846,30 @@ public sealed class OrleansReplicaKernelBuilder
                     GrainDirectoryCheckpointHelper.Clone(checkpoint)))
             .GetAwaiter()
             .GetResult();
+    }
+
+    private ClusterGrainInterfaceVersionManifest BuildGrainInterfaceVersions()
+        => new(_grainInterfaceVersionTable ?? new InMemoryGrainInterfaceVersionTable());
+
+    private void RegisterSupportedInterfaces(
+        ClusterGrainInterfaceVersionManifest grainInterfaceVersions,
+        IEnumerable<string> nodeNames)
+    {
+        ArgumentNullException.ThrowIfNull(grainInterfaceVersions);
+        ArgumentNullException.ThrowIfNull(nodeNames);
+
+        var supportedInterfaces = _grainReferences.Values
+            .Select(item => GrainInterfaceVersionMetadata.FromContract(item.ContractType, item.GrainType))
+            .Distinct()
+            .OrderBy(item => item.GrainType, StringComparer.Ordinal)
+            .ThenBy(item => item.CompatibilityFamily, StringComparer.Ordinal)
+            .ThenBy(item => item.Version)
+            .ToArray();
+
+        foreach (var nodeName in nodeNames.Distinct(StringComparer.Ordinal))
+        {
+            grainInterfaceVersions.Register(nodeName, supportedInterfaces);
+        }
     }
 
     private ObjectReferenceFactoryRegistry BuildObjectReferenceFactoryRegistry() =>
@@ -838,6 +920,7 @@ public sealed class OrleansReplicaKernelBuilder
         GrainPolicySet grainPolicies,
         IClusterMembership membership,
         Dictionary<string, GossipedClusterMembershipView> membershipViews,
+        ClusterGrainInterfaceVersionManifest grainInterfaceVersions,
         InProcessMembershipGossiper membershipGossiper,
         IFailureDetector failureDetector,
         PersistentStateFactory persistentStateFactory,
@@ -861,7 +944,13 @@ public sealed class OrleansReplicaKernelBuilder
 
         var activationDirectories = new Dictionary<string, IActivationDirectory>(StringComparer.Ordinal);
         var (grainDirectory, loadProvider, rebalancingPolicy) =
-            BuildDirectory(nodeName, membership, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
+            BuildDirectory(
+                nodeName,
+                membership,
+                membershipViews[nodeName],
+                grainInterfaceVersions,
+                grainPolicies.PlacementHints,
+                activationDirectories);
         var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
         var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
             .FirstOrDefault(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal));
@@ -901,7 +990,7 @@ public sealed class OrleansReplicaKernelBuilder
             _timeProvider,
             acceptInboundConnections: true,
             allowUnknownInboundNodes: true);
-        var locator = new DirectoryGrainLocator(grainDirectory);
+        var locator = new DirectoryGrainLocator(grainDirectory, grainInterfaceVersions);
         var router = new LocalGrainRouter(nodeName, locator);
         var runtime = new InProcessRuntime(
             nodeName,
@@ -985,6 +1074,7 @@ public sealed class OrleansReplicaKernelBuilder
         string[] allNodeNames,
         GrainPolicySet grainPolicies,
         Dictionary<string, GossipedClusterMembershipView> membershipViews,
+        ClusterGrainInterfaceVersionManifest grainInterfaceVersions,
         InProcessNodeRegistry nodeRegistry,
         IFailureDetector failureDetector,
         IGrainDirectory grainDirectory,
@@ -1005,7 +1095,7 @@ public sealed class OrleansReplicaKernelBuilder
                 nodeRegistry,
                 messageSerializer,
                 _timeProvider);
-            var locator = new DirectoryGrainLocator(grainDirectory);
+            var locator = new DirectoryGrainLocator(grainDirectory, grainInterfaceVersions);
             var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
             var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
                 .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));

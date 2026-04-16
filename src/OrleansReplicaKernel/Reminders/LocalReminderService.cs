@@ -337,6 +337,10 @@ internal sealed class LocalReminderService : IAsyncDisposable
 
         public string InterfaceName => nameof(IRemindable);
 
+        public string InterfaceCompatibilityFamily => nameof(IRemindable);
+
+        public int InterfaceVersion => 1;
+
         public string MethodName => nameof(IRemindable.ReceiveReminderAsync);
 
         public async ValueTask<object?> InvokeAsync(object target, CancellationToken cancellationToken)

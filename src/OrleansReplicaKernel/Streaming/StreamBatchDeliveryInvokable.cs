@@ -13,6 +13,10 @@ internal sealed class StreamBatchDeliveryInvokable : IInvokable
 
     public string InterfaceName => nameof(IAsyncStreamSubscriptionObserver<object>);
 
+    public string InterfaceCompatibilityFamily => nameof(IAsyncStreamSubscriptionObserver<object>);
+
+    public int InterfaceVersion => 1;
+
     public string MethodName => "OnNextBatchAsync";
 
     public async ValueTask<object?> InvokeAsync(object target, CancellationToken cancellationToken)

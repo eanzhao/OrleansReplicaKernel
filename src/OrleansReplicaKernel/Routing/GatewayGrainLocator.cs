@@ -1,5 +1,6 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
+using OrleansReplicaKernel.Versioning;
 
 namespace OrleansReplicaKernel.Routing;
 
@@ -15,7 +16,7 @@ public sealed class GatewayGrainLocator : IGrainLocator
         _gatewaySelector = gatewaySelector ?? throw new ArgumentNullException(nameof(gatewaySelector));
     }
 
-    public GrainAddress Locate(GrainId grainId)
+    public GrainAddress Locate(GrainId grainId, GrainInterfaceVersionDescriptor? requestedInterface = null)
     {
         string gatewayNodeName;
 

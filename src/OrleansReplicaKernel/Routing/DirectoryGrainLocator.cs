@@ -1,5 +1,6 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
+using OrleansReplicaKernel.Versioning;
 
 namespace OrleansReplicaKernel.Routing;
 
@@ -7,15 +8,19 @@ public sealed class DirectoryGrainLocator : IGrainLocator
 {
     private readonly object _lock = new();
     private readonly IGrainDirectory _grainDirectory;
+    private readonly ClusterGrainInterfaceVersionManifest? _grainInterfaceVersions;
     private readonly Dictionary<GrainId, GrainOwnerRecord> _cache = new();
     private long _observedInvalidationVersion = -1;
 
-    public DirectoryGrainLocator(IGrainDirectory grainDirectory)
+    public DirectoryGrainLocator(
+        IGrainDirectory grainDirectory,
+        ClusterGrainInterfaceVersionManifest? grainInterfaceVersions = null)
     {
-        _grainDirectory = grainDirectory;
+        _grainDirectory = grainDirectory ?? throw new ArgumentNullException(nameof(grainDirectory));
+        _grainInterfaceVersions = grainInterfaceVersions;
     }
 
-    public GrainAddress Locate(GrainId grainId)
+    public GrainAddress Locate(GrainId grainId, GrainInterfaceVersionDescriptor? requestedInterface = null)
     {
         GrainOwnerRecord record;
         long observedInvalidationVersion;
@@ -30,7 +35,8 @@ public sealed class DirectoryGrainLocator : IGrainLocator
         if (hasCachedRecord)
         {
             var currentInvalidationVersion = _grainDirectory.GetInvalidationVersion();
-            if (currentInvalidationVersion == observedInvalidationVersion)
+            if (currentInvalidationVersion == observedInvalidationVersion
+                && IsCompatible(record.OwnerNodeName, requestedInterface))
             {
                 TraceLog.Write(
                     "locator",
@@ -38,7 +44,7 @@ public sealed class DirectoryGrainLocator : IGrainLocator
                 return new GrainAddress(record.OwnerNodeName, grainId, record.Version);
             }
 
-            var refreshedRecord = _grainDirectory.Resolve(grainId);
+            var refreshedRecord = _grainDirectory.Resolve(grainId, requestedInterface);
             var refreshedInvalidationVersion = _grainDirectory.GetInvalidationVersion();
 
             lock (_lock)
@@ -53,7 +59,7 @@ public sealed class DirectoryGrainLocator : IGrainLocator
             return new GrainAddress(refreshedRecord.OwnerNodeName, grainId, refreshedRecord.Version);
         }
 
-        record = _grainDirectory.Resolve(grainId);
+        record = _grainDirectory.Resolve(grainId, requestedInterface);
         var invalidationVersion = _grainDirectory.GetInvalidationVersion();
 
         lock (_lock)
@@ -81,4 +87,8 @@ public sealed class DirectoryGrainLocator : IGrainLocator
 
         TraceLog.Write("locator", $"no cached address to invalidate for {grainId}");
     }
+
+    private bool IsCompatible(string nodeName, GrainInterfaceVersionDescriptor? requestedInterface)
+        => requestedInterface is null
+            || _grainInterfaceVersions?.Supports(nodeName, requestedInterface) != false;
 }

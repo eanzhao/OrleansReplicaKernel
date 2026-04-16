@@ -1,6 +1,7 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Messaging;
+using OrleansReplicaKernel.Versioning;
 
 namespace OrleansReplicaKernel.Routing;
 
@@ -27,7 +28,10 @@ public sealed class LocalGrainRouter : IGrainRouter
             return new GrainAddress(callbackNodeName, message.Target.GrainId, OwnerVersion: 0);
         }
 
-        var address = _locator.Locate(message.Target.GrainId);
+        var requestedInterface = GrainInterfaceVersionDescriptor.FromInvocation(
+            message.Target.GrainId,
+            message.Invokable);
+        var address = _locator.Locate(message.Target.GrainId, requestedInterface);
         if (address.NodeName != _localNodeName)
         {
             TraceLog.Write(

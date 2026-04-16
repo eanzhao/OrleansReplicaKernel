@@ -1,6 +1,7 @@
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Runtime;
+using OrleansReplicaKernel.Versioning;
 
 namespace OrleansReplicaKernel.Routing;
 
@@ -11,6 +12,7 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
     private readonly IPlacementPolicy _placementPolicy;
     private readonly IPlacementLoadProvider _loadProvider;
     private readonly IOwnerRelocationPolicy _relocationPolicy;
+    private readonly ClusterGrainInterfaceVersionManifest? _grainInterfaceVersions;
     private readonly IReadOnlyDictionary<string, GrainTypePlacementHint> _placementHints;
     private readonly Dictionary<GrainId, GrainOwnerRecord> _records = new();
     private long _invalidationVersion;
@@ -20,8 +22,16 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
         IPlacementPolicy placementPolicy,
         IPlacementLoadProvider loadProvider,
         IOwnerRelocationPolicy relocationPolicy,
-        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null)
-        : this(membershipView, placementPolicy, loadProvider, relocationPolicy, checkpoint: null, placementHints)
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null,
+        ClusterGrainInterfaceVersionManifest? grainInterfaceVersions = null)
+        : this(
+            membershipView,
+            placementPolicy,
+            loadProvider,
+            relocationPolicy,
+            checkpoint: null,
+            placementHints,
+            grainInterfaceVersions)
     {
     }
 
@@ -31,12 +41,14 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
         IPlacementLoadProvider loadProvider,
         IOwnerRelocationPolicy relocationPolicy,
         GrainDirectoryCheckpoint? checkpoint,
-        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints)
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints,
+        ClusterGrainInterfaceVersionManifest? grainInterfaceVersions)
     {
         _membershipView = membershipView;
         _placementPolicy = placementPolicy;
         _loadProvider = loadProvider;
         _relocationPolicy = relocationPolicy;
+        _grainInterfaceVersions = grainInterfaceVersions;
         _placementHints = placementHints ?? new Dictionary<string, GrainTypePlacementHint>(StringComparer.Ordinal);
 
         if (checkpoint is null)
@@ -62,18 +74,18 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
         }
     }
 
-    public GrainOwnerRecord Resolve(GrainId grainId)
+    public GrainOwnerRecord Resolve(GrainId grainId, GrainInterfaceVersionDescriptor? requestedInterface = null)
     {
         lock (_lock)
         {
             if (_records.TryGetValue(grainId, out var record))
             {
-                if (_membershipView.GetHealth(record.OwnerNodeName) == NodeHealthStatus.Unhealthy)
+                if (!IsUsableOwner(record.OwnerNodeName, requestedInterface))
                 {
-                    var fallbackOwnerNodeName = _relocationPolicy.SelectOwner(
+                    var fallbackOwnerNodeName = SelectCompatibleOwner(
                         grainId,
                         record.OwnerNodeName,
-                        _membershipView);
+                        requestedInterface);
                     var relocated = record with
                     {
                         OwnerNodeName = fallbackOwnerNodeName,
@@ -85,7 +97,7 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
 
                     TraceLog.Write(
                         "grain-directory",
-                        $"relocate owner {grainId} {record.OwnerNodeName} -> {relocated.OwnerNodeName} v{relocated.Version} epoch={_membershipView.CurrentEpoch}");
+                        $"relocate owner {grainId} {record.OwnerNodeName} -> {relocated.OwnerNodeName} v{relocated.Version} epoch={_membershipView.CurrentEpoch} interface={Describe(requestedInterface)}");
                     return relocated;
                 }
 
@@ -95,11 +107,7 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
                 return record;
             }
 
-            var initialOwnerNodeName = _placementPolicy.SelectInitialOwner(
-                grainId,
-                _membershipView,
-                _loadProvider.GetSnapshot(),
-                ResolvePlacementHint(grainId.GrainType));
+            var initialOwnerNodeName = SelectCompatibleOwner(grainId, currentOwnerNodeName: null, requestedInterface);
             var created = new GrainOwnerRecord(grainId, initialOwnerNodeName, Version: 1);
             _records.Add(grainId, created);
             _invalidationVersion++;
@@ -157,11 +165,68 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
         IPlacementLoadProvider loadProvider,
         IOwnerRelocationPolicy relocationPolicy,
         GrainDirectoryCheckpoint checkpoint,
-        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null)
-        => new(membershipView, placementPolicy, loadProvider, relocationPolicy, checkpoint, placementHints);
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null,
+        ClusterGrainInterfaceVersionManifest? grainInterfaceVersions = null)
+        => new(
+            membershipView,
+            placementPolicy,
+            loadProvider,
+            relocationPolicy,
+            checkpoint,
+            placementHints,
+            grainInterfaceVersions);
 
     private GrainTypePlacementHint ResolvePlacementHint(string grainType)
         => _placementHints.TryGetValue(grainType, out var hint)
             ? hint
             : GrainTypePlacementHint.Default;
+
+    private bool IsUsableOwner(string ownerNodeName, GrainInterfaceVersionDescriptor? requestedInterface)
+        => _membershipView.GetHealth(ownerNodeName) == NodeHealthStatus.Healthy
+           && (requestedInterface is null
+               || _grainInterfaceVersions?.Supports(ownerNodeName, requestedInterface) != false);
+
+    private string SelectCompatibleOwner(
+        GrainId grainId,
+        string? currentOwnerNodeName,
+        GrainInterfaceVersionDescriptor? requestedInterface)
+    {
+        var compatibleView = ResolveCompatibleMembershipView(grainId, requestedInterface);
+        if (currentOwnerNodeName is not null
+            && _membershipView.GetHealth(currentOwnerNodeName) != NodeHealthStatus.Healthy)
+        {
+            return _relocationPolicy.SelectOwner(grainId, currentOwnerNodeName, compatibleView);
+        }
+
+        return _placementPolicy.SelectInitialOwner(
+            grainId,
+            compatibleView,
+            _loadProvider.GetSnapshot(),
+            ResolvePlacementHint(grainId.GrainType));
+    }
+
+    private IClusterMembershipView ResolveCompatibleMembershipView(
+        GrainId grainId,
+        GrainInterfaceVersionDescriptor? requestedInterface)
+    {
+        if (requestedInterface is null)
+        {
+            return _membershipView;
+        }
+
+        var compatibleMembers = _grainInterfaceVersions?.GetCompatibleHealthyMembers(_membershipView, requestedInterface)
+            ?? _membershipView.GetHealthyMembers();
+        if (compatibleMembers.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"No compatible placement candidate is available for grain '{grainId}' and interface '{Describe(requestedInterface)}'.");
+        }
+
+        return new FilteredClusterMembershipView(_membershipView, compatibleMembers);
+    }
+
+    private static string Describe(GrainInterfaceVersionDescriptor? requestedInterface)
+        => requestedInterface is null
+            ? "<any>"
+            : $"{requestedInterface.CompatibilityFamily}@v{requestedInterface.Version}";
 }
