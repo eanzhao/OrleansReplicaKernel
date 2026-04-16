@@ -1,7 +1,10 @@
 using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.CodeGeneration;
 
 namespace OrleansReplicaKernel.Demo;
 
+[CollectionAgeLimit(100)]
+[PreferLocalPlacement]
 public sealed partial class CounterGrain : ICounterGrain
 {
     private int _total;

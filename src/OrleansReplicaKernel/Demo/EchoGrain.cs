@@ -1,8 +1,10 @@
 using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.CodeGeneration;
 using OrleansReplicaKernel.Runtime;
 
 namespace OrleansReplicaKernel.Demo;
 
+[CollectionAgeLimit(5000)]
 public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipant
 {
     private static string? _nextCaptureFailureReason;
@@ -27,6 +29,7 @@ public sealed partial class EchoGrain : IEchoGrain, IActivationHandoffParticipan
         return Task.FromResult($"echo:{text}:count={_callCount}");
     }
 
+    [AlwaysInterleave]
     public async Task<string> PingSlowAsync(string text, int delayMs, CancellationToken cancellationToken = default)
     {
         TraceLog.Write("grain", $"EchoGrain begin PingSlowAsync(\"{text}\") delay={delayMs}ms");

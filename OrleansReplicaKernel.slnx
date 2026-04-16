@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/docs/" />
   <Folder Name="/src/">
+    <Project Path="src/OrleansReplicaKernel.CodeGenerator/OrleansReplicaKernel.CodeGenerator.csproj" />
     <Project Path="src/OrleansReplicaKernel/OrleansReplicaKernel.csproj" />
   </Folder>
   <Folder Name="/test/">

@@ -42,9 +42,10 @@
 │   ├── Scheduling/   # 调度器：Turn 串行执行、方法级 Interleaving
 │   ├── Routing/      # 路由：目录查询、放置决策、负载均衡、本地激活管理
 │   ├── Runtime/      # 运行时核心：调用执行、传输层、Membership、故障检测
-│   ├── Demo/         # 示例 Grain 和模拟生成代码
+│   ├── Demo/         # 示例 Grain 和 Source Generator 输入
 │   └── Program.cs    # 端到端演示入口
-├── test/             # 单元测试（68 个）
+├── src/OrleansReplicaKernel.CodeGenerator/  # Roslyn Source Generator
+├── test/             # 单元测试（75 个）
 └── docs/             # 完整文档（92 篇，见 docs/README.md）
 ```
 
@@ -103,7 +104,7 @@ Response 回传（去重 / 超时丢弃 / Stale 过滤）→ 返回结果
 | **序列化** | 二进制序列化运行时；`InvocationMessage` / `InvocationResponseMessage` wire format；`IInvokable`、`GrainId`、`GrainAddress`、`ObjectReferenceData` codec；基础类型与集合 codec（List/Array/Dictionary/HashSet）；自定义 codec 注册；可选/nullable 字段支持；新增字段可跳过的版本容忍 |
 | **Timer** | Activation 级 Timer；不越过独占 Turn；随 Activation 取消；Activation 本地时间开始统一到 TimeProvider |
 | **宿主** | Host 暴露当前 TimeProvider；提供 provider-aware delay/timeout/elapsed/wait helper；demo 与 runtime tests 的状态观察开始脱离固定睡眠 |
-| **元数据** | 生成 Attribute + 程序集扫描，自动发现 Grain 实现/引用/对象引用 |
+| **元数据** | 生成 Attribute + 程序集扫描，自动发现 Grain 实现/引用/对象引用；Roslyn Source Generator 生成 Grain Reference / Invokable / Object Reference / Activator Metadata / Invokable Codec |
 | **恢复** | Runtime Checkpoint 导出/恢复 Membership + Directory + Activation 元数据 |
 | **回收** | 按 Grain 类型配置不同的空闲回收时间 |
 
@@ -116,7 +117,7 @@ Response 回传（去重 / 超时丢弃 / Stale 过滤）→ 返回结果
 - State Storage Provider / Persistent State / 事务
 - Streaming / Pub-Sub / Queue Adapter
 - Reminder / System Target / 完整 Timer 生态
-- Client / Gateway / 运行时序列化 / 代码生成器
+- Client / Gateway / 完整的 Application Part / Metadata Manifest / 更完整的 serializer-copier codegen
 - 完整的 Application Part / Metadata Manifest
 - 完整的 Reentrancy / Interleaving 模型
 - 完整的 Object Reference 跨进程 Rehydration

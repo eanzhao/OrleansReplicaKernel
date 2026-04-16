@@ -550,6 +550,17 @@ public sealed class InvocationResponseSemanticsTests
     }
 
     [Fact]
+    public async Task SourceGenerator_CanAddNewGrainWithoutHandWrittenGlueCode()
+    {
+        await using var host = CreateHost();
+        var greeter = host.GetGrain<IGreeterGrain>("generated-greeter");
+
+        var result = await greeter.GreetAsync("source-generator");
+
+        Assert.Equal("hello:source-generator", result);
+    }
+
+    [Fact]
     public async Task GeneratedGrainImplementationMetadata_CanOverrideIdleCollectionAgePerGrainType()
     {
         await using var host = CreateHost();
