@@ -30,12 +30,8 @@ public sealed class BinaryObjectWriter
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fieldId);
         ArgumentNullException.ThrowIfNull(writePayload);
 
-        var payload = new BinaryBufferWriter();
-        writePayload(payload);
-
         _writer.WriteVarUInt32((uint)fieldId);
-        _writer.WriteVarUInt32((uint)payload.WrittenCount);
-        _writer.WriteBytes(payload.WrittenSpan);
+        _writer.WriteLengthPrefixed(writePayload);
     }
 
     public static void WriteObject(BinaryBufferWriter writer, Action<BinaryObjectWriter> writeFields)

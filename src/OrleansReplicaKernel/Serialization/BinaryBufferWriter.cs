@@ -5,6 +5,8 @@ namespace OrleansReplicaKernel.Serialization;
 
 public sealed class BinaryBufferWriter
 {
+    [ThreadStatic] private static BinaryBufferWriter? _pooled;
+
     private readonly ArrayBufferWriter<byte> _buffer;
 
     public BinaryBufferWriter(int initialCapacity = 256)
@@ -15,6 +17,41 @@ public sealed class BinaryBufferWriter
     public int WrittenCount => _buffer.WrittenCount;
 
     public ReadOnlySpan<byte> WrittenSpan => _buffer.WrittenSpan;
+
+    public void WriteLengthPrefixed(Action<BinaryBufferWriter> writePayload)
+    {
+        var inner = RentPooled();
+        try
+        {
+            writePayload(inner);
+            WriteVarUInt32((uint)inner.WrittenCount);
+            WriteBytes(inner.WrittenSpan);
+        }
+        finally
+        {
+            ReturnPooled(inner);
+        }
+    }
+
+    private static BinaryBufferWriter RentPooled()
+    {
+        var pooled = _pooled;
+        if (pooled is not null)
+        {
+            _pooled = null;
+            pooled.Reset();
+            return pooled;
+        }
+
+        return new BinaryBufferWriter();
+    }
+
+    private static void ReturnPooled(BinaryBufferWriter writer)
+    {
+        _pooled = writer;
+    }
+
+    public void Reset() => _buffer.ResetWrittenCount();
 
     public byte[] ToArray() => _buffer.WrittenSpan.ToArray();
 

@@ -2,9 +2,9 @@ namespace OrleansReplicaKernel.Serialization;
 
 public sealed class BinarySerializer
 {
-    private readonly object _codecLock = new();
-    private readonly Dictionary<string, IBinaryCodec> _codecsByAlias;
-    private readonly Dictionary<Type, IBinaryCodec> _codecsByType;
+    private readonly Lock _codecLock = new();
+    private Dictionary<string, IBinaryCodec> _codecsByAlias;
+    private Dictionary<Type, IBinaryCodec> _codecsByType;
 
     public BinarySerializer(IEnumerable<IBinaryCodec> codecs)
     {
@@ -15,7 +15,7 @@ public sealed class BinarySerializer
 
         foreach (var codec in codecs)
         {
-            Register(codec);
+            RegisterLocked(codec);
         }
     }
 
@@ -151,11 +151,7 @@ public sealed class BinarySerializer
 
         var codec = ResolveCodec(value.GetType());
         writer.WriteString(codec.Alias);
-
-        var payload = new BinaryBufferWriter();
-        codec.WriteUntyped(payload, value, this);
-        writer.WriteVarUInt32((uint)payload.WrittenCount);
-        writer.WriteBytes(payload.WrittenSpan);
+        writer.WriteLengthPrefixed(payload => codec.WriteUntyped(payload, value, this));
     }
 
     public void WriteNullable<T>(BinaryBufferWriter writer, T? value)
@@ -169,10 +165,7 @@ public sealed class BinarySerializer
             return;
         }
 
-        var payload = new BinaryBufferWriter();
-        GetCodec<T>().Write(payload, value.Value, this);
-        writer.WriteVarUInt32((uint)payload.WrittenCount);
-        writer.WriteBytes(payload.WrittenSpan);
+        writer.WriteLengthPrefixed(payload => GetCodec<T>().Write(payload, value.Value, this));
     }
 
     public void WriteOptional<T>(BinaryBufferWriter writer, T? value)
@@ -186,13 +179,10 @@ public sealed class BinarySerializer
             return;
         }
 
-        var payload = new BinaryBufferWriter();
-        GetCodec<T>().Write(payload, value, this);
-        writer.WriteVarUInt32((uint)payload.WrittenCount);
-        writer.WriteBytes(payload.WrittenSpan);
+        writer.WriteLengthPrefixed(payload => GetCodec<T>().Write(payload, value, this));
     }
 
-    private void Register(IBinaryCodec codec)
+    private void RegisterLocked(IBinaryCodec codec)
     {
         ArgumentNullException.ThrowIfNull(codec);
 
@@ -218,8 +208,10 @@ public sealed class BinarySerializer
                 $"Binary codec alias '{codec.Alias}' is already registered by '{existingByAlias.GetType().Name}'.");
         }
 
-        _codecsByType.Add(codec.ValueType, codec);
-        _codecsByAlias.Add(codec.Alias, codec);
+        var newByType = new Dictionary<Type, IBinaryCodec>(_codecsByType) { [codec.ValueType] = codec };
+        var newByAlias = new Dictionary<string, IBinaryCodec>(_codecsByAlias, StringComparer.Ordinal) { [codec.Alias] = codec };
+        _codecsByType = newByType;
+        _codecsByAlias = newByAlias;
     }
 
     private IBinaryCodec ResolveCodec(string alias)
@@ -238,7 +230,7 @@ public sealed class BinarySerializer
 
             codec = CreateCodecFromAlias(alias)
                 ?? throw new InvalidOperationException($"No binary codec registered for alias '{alias}'.");
-            Register(codec);
+            RegisterLocked(codec);
             return codec;
         }
     }
@@ -259,7 +251,7 @@ public sealed class BinarySerializer
 
             codec = CreateCodecFromType(type)
                 ?? throw new InvalidOperationException($"No binary codec registered for type '{type.FullName}'.");
-            Register(codec);
+            RegisterLocked(codec);
             return codec;
         }
     }
@@ -392,10 +384,7 @@ internal sealed class ArrayBinaryCodec<T> : BinaryCodec<T[]>
 
         foreach (var item in value)
         {
-            var payload = new BinaryBufferWriter();
-            _elementCodec.Write(payload, item, serializer);
-            writer.WriteVarUInt32((uint)payload.WrittenCount);
-            writer.WriteBytes(payload.WrittenSpan);
+            writer.WriteLengthPrefixed(payload => _elementCodec.Write(payload, item, serializer));
         }
     }
 }
@@ -444,10 +433,7 @@ internal sealed class ListBinaryCodec<T> : BinaryCodec<List<T>>
 
         foreach (var item in value)
         {
-            var payload = new BinaryBufferWriter();
-            _elementCodec.Write(payload, item, serializer);
-            writer.WriteVarUInt32((uint)payload.WrittenCount);
-            writer.WriteBytes(payload.WrittenSpan);
+            writer.WriteLengthPrefixed(payload => _elementCodec.Write(payload, item, serializer));
         }
     }
 }
@@ -506,15 +492,8 @@ internal sealed class DictionaryBinaryCodec<TKey, TValue> : BinaryCodec<Dictiona
 
         foreach (var pair in value)
         {
-            var keyPayload = new BinaryBufferWriter();
-            _keyCodec.Write(keyPayload, pair.Key, serializer);
-            writer.WriteVarUInt32((uint)keyPayload.WrittenCount);
-            writer.WriteBytes(keyPayload.WrittenSpan);
-
-            var valuePayload = new BinaryBufferWriter();
-            _valueCodec.Write(valuePayload, pair.Value, serializer);
-            writer.WriteVarUInt32((uint)valuePayload.WrittenCount);
-            writer.WriteBytes(valuePayload.WrittenSpan);
+            writer.WriteLengthPrefixed(payload => _keyCodec.Write(payload, pair.Key, serializer));
+            writer.WriteLengthPrefixed(payload => _valueCodec.Write(payload, pair.Value, serializer));
         }
     }
 }
@@ -564,10 +543,7 @@ internal sealed class HashSetBinaryCodec<T> : BinaryCodec<HashSet<T>>
 
         foreach (var item in value)
         {
-            var payload = new BinaryBufferWriter();
-            _elementCodec.Write(payload, item, serializer);
-            writer.WriteVarUInt32((uint)payload.WrittenCount);
-            writer.WriteBytes(payload.WrittenSpan);
+            writer.WriteLengthPrefixed(payload => _elementCodec.Write(payload, item, serializer));
         }
     }
 }
