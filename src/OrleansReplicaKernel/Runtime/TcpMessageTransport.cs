@@ -1,9 +1,13 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Messaging;
+using OrleansReplicaKernel.Security;
 using OrleansReplicaKernel.Serialization;
 
 namespace OrleansReplicaKernel.Runtime;
@@ -21,6 +25,8 @@ public sealed class TcpMessageTransport :
     private readonly BinaryMessageSerializer _messageSerializer;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _heartbeatInterval;
+    private readonly InvocationSourceKind _localSourceKind;
+    private readonly TcpTransportSecurityOptions? _securityOptions;
     private readonly bool _acceptInboundConnections;
     private readonly bool _allowUnknownInboundNodes;
     private readonly CancellationTokenSource _disposeCancellation = new();
@@ -44,6 +50,8 @@ public sealed class TcpMessageTransport :
         BinaryMessageSerializer messageSerializer,
         TimeSpan heartbeatInterval,
         TimeProvider? timeProvider = null,
+        InvocationSourceKind localSourceKind = InvocationSourceKind.ClusterNode,
+        TcpTransportSecurityOptions? securityOptions = null,
         bool acceptInboundConnections = true,
         bool allowUnknownInboundNodes = false)
     {
@@ -65,6 +73,8 @@ public sealed class TcpMessageTransport :
         _messageSerializer = messageSerializer;
         _heartbeatInterval = heartbeatInterval;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _localSourceKind = localSourceKind;
+        _securityOptions = securityOptions;
         _acceptInboundConnections = acceptInboundConnections;
         _allowUnknownInboundNodes = allowUnknownInboundNodes;
     }
@@ -288,9 +298,11 @@ public sealed class TcpMessageTransport :
             await connection.InitializeAcceptedAsync(cancellationToken);
             RegisterActiveConnection(connection);
         }
-        catch (Exception exception) when (exception is SocketException or IOException or InvalidOperationException or OperationCanceledException)
+        catch (Exception exception)
         {
-            TraceLog.Write("transport", $"reject tcp connection on {_localNodeName}: {exception.GetType().Name}");
+            TraceLog.Write(
+                "transport",
+                $"reject tcp connection on {_localNodeName}: {exception.GetType().Name}: {exception.Message}");
             await connection.DisposeAsync();
         }
     }
@@ -432,7 +444,7 @@ public sealed class TcpMessageTransport :
 
     private const int MaxFrameLength = 16 * 1024 * 1024; // 16 MB
 
-    private async Task<TcpTransportFrame> ReadFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
+    private async Task<TcpTransportFrame> ReadFrameAsync(Stream stream, CancellationToken cancellationToken)
     {
         var lengthBuffer = new byte[4];
         await ReadExactlyAsync(stream, lengthBuffer, cancellationToken);
@@ -456,7 +468,7 @@ public sealed class TcpMessageTransport :
             frameLength == 1 ? ReadOnlyMemory<byte>.Empty : frameBuffer.AsMemory(1));
     }
 
-    private static async Task ReadExactlyAsync(NetworkStream stream, byte[] buffer, CancellationToken cancellationToken)
+    private static async Task ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
     {
         var offset = 0;
         while (offset < buffer.Length)
@@ -472,7 +484,7 @@ public sealed class TcpMessageTransport :
     }
 
     private async Task WriteFrameAsync(
-        NetworkStream stream,
+        Stream stream,
         SemaphoreSlim writeLock,
         TcpTransportFrameKind kind,
         ReadOnlyMemory<byte> payload,
@@ -523,11 +535,12 @@ public sealed class TcpMessageTransport :
     {
         private readonly TcpMessageTransport _owner;
         private readonly TcpClient _client;
-        private readonly NetworkStream _stream;
+        private Stream _stream;
         private readonly SemaphoreSlim _writeLock = new(1, 1);
         private readonly string? _expectedRemoteNodeName;
         private readonly Action<TcpTransportConnection> _onClosed;
         private readonly CancellationTokenSource _connectionCancellation = new();
+        private X509Certificate2? _remoteCertificate;
 
         private DateTimeOffset _lastReceivedUtc;
         private DateTimeOffset _lastSentUtc;
@@ -556,6 +569,8 @@ public sealed class TcpMessageTransport :
 
         public async Task InitializeAcceptedAsync(CancellationToken cancellationToken)
         {
+            await AuthenticateAsServerAsync(cancellationToken);
+
             var hello = await _owner.ReadFrameAsync(_stream, cancellationToken);
             if (hello.Kind != TcpTransportFrameKind.Hello)
             {
@@ -564,7 +579,19 @@ public sealed class TcpMessageTransport :
 
             var reader = new BinaryBufferReader(hello.Payload.Span);
             var remoteNodeName = reader.ReadString();
+            var remoteSourceKind = (InvocationSourceKind)reader.ReadVarInt32();
             reader.EnsureFullyConsumed();
+
+            if (_owner._securityOptions is not null)
+            {
+                var authenticatedPeer = ResolveAuthenticatedPeer();
+                if (!string.Equals(authenticatedPeer.Name, remoteNodeName, StringComparison.Ordinal)
+                    || authenticatedPeer.SourceKind != remoteSourceKind)
+                {
+                    throw new AuthenticationException(
+                        $"TCP hello identity '{remoteNodeName}/{remoteSourceKind}' does not match the authenticated certificate peer '{authenticatedPeer.Name}/{authenticatedPeer.SourceKind}'.");
+                }
+            }
 
             if (!_owner._allowUnknownInboundNodes
                 && _owner._peerEndpoints.Count > 0
@@ -582,8 +609,11 @@ public sealed class TcpMessageTransport :
             RemoteNodeName = _expectedRemoteNodeName
                 ?? throw new InvalidOperationException("Outgoing TCP transport connection requires a remote node name.");
 
+            await AuthenticateAsClientAsync(RemoteNodeName, cancellationToken);
+
             var helloWriter = new BinaryBufferWriter();
             helloWriter.WriteString(_owner._localNodeName);
+            helloWriter.WriteVarInt32((int)_owner._localSourceKind);
             await SendFrameAsync(TcpTransportFrameKind.Hello, helloWriter.ToArray(), cancellationToken);
             StartBackgroundLoops();
         }
@@ -623,6 +653,8 @@ public sealed class TcpMessageTransport :
             }
 
             _connectionCancellation.Cancel();
+            _remoteCertificate?.Dispose();
+            _stream.Dispose();
             _client.Dispose();
 
             if (awaitReceiveLoop && _receiveLoop is not null)
@@ -664,6 +696,100 @@ public sealed class TcpMessageTransport :
             _connectionCancellation.Dispose();
         }
 
+        private async Task AuthenticateAsServerAsync(CancellationToken cancellationToken)
+        {
+            if (_owner._securityOptions is null)
+            {
+                return;
+            }
+
+            var secureStream = new SslStream(
+                _stream,
+                leaveInnerStreamOpen: false,
+                (_, certificate, _, _) => ValidateRemoteCertificate(certificate, expectedRemoteNodeName: null));
+
+            await secureStream.AuthenticateAsServerAsync(
+                new SslServerAuthenticationOptions
+                {
+                    ServerCertificate = _owner._securityOptions.LocalCertificate,
+                    ClientCertificateRequired = true,
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+                },
+                cancellationToken);
+
+            _stream = secureStream;
+            CaptureRemoteCertificate(secureStream.RemoteCertificate);
+        }
+
+        private async Task AuthenticateAsClientAsync(string remoteNodeName, CancellationToken cancellationToken)
+        {
+            if (_owner._securityOptions is null)
+            {
+                return;
+            }
+
+            var secureStream = new SslStream(
+                _stream,
+                leaveInnerStreamOpen: false,
+                (_, certificate, _, _) => ValidateRemoteCertificate(certificate, remoteNodeName));
+
+            await secureStream.AuthenticateAsClientAsync(
+                new SslClientAuthenticationOptions
+                {
+                    TargetHost = remoteNodeName,
+                    ClientCertificates = new X509CertificateCollection
+                    {
+                        _owner._securityOptions.LocalCertificate
+                    },
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+                },
+                cancellationToken);
+
+            _stream = secureStream;
+            CaptureRemoteCertificate(secureStream.RemoteCertificate);
+        }
+
+        private bool ValidateRemoteCertificate(X509Certificate? certificate, string? expectedRemoteNodeName)
+        {
+            if (_owner._securityOptions is null || certificate is null)
+            {
+                return false;
+            }
+
+            using var presentedCertificate = CloneCertificate(certificate);
+            if (expectedRemoteNodeName is not null)
+            {
+                return _owner._securityOptions.TryGetTrustedPeer(expectedRemoteNodeName, out var expectedPeer)
+                    && string.Equals(
+                        expectedPeer.CertificateThumbprint,
+                        TcpTransportSecurityOptions.NormalizeThumbprint(presentedCertificate.Thumbprint),
+                        StringComparison.OrdinalIgnoreCase);
+            }
+
+            return _owner._securityOptions.TryMatchTrustedPeer(presentedCertificate, out _);
+        }
+
+        private void CaptureRemoteCertificate(X509Certificate? certificate)
+        {
+            _remoteCertificate?.Dispose();
+            _remoteCertificate = certificate is null
+                ? null
+                : CloneCertificate(certificate);
+        }
+
+        private TcpTransportSecurityOptions.TrustedPeer ResolveAuthenticatedPeer()
+        {
+            if (_owner._securityOptions is null || !_owner._securityOptions.TryMatchTrustedPeer(_remoteCertificate, out var peer))
+            {
+                throw new AuthenticationException("TCP transport did not receive a trusted remote certificate.");
+            }
+
+            return peer;
+        }
+
+        private static X509Certificate2 CloneCertificate(X509Certificate certificate)
+            => X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
+
         private void StartBackgroundLoops()
         {
             _receiveLoop = Task.Run(() => ReceiveLoopAsync(_connectionCancellation.Token), CancellationToken.None);
@@ -702,14 +828,14 @@ public sealed class TcpMessageTransport :
                     }
                 }
             }
-            catch (Exception exception) when (exception is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                if (!cancellationToken.IsCancellationRequested)
-                {
-                    TraceLog.Write(
-                        "transport",
-                        $"tcp session {_owner._localNodeName} <-> {RemoteNodeName} closed: {exception.GetType().Name}");
-                }
+            }
+            catch (Exception exception)
+            {
+                TraceLog.Write(
+                    "transport",
+                    $"tcp session {_owner._localNodeName} <-> {RemoteNodeName} closed: {exception.GetType().Name}: {exception.Message}");
             }
             finally
             {
@@ -729,14 +855,14 @@ public sealed class TcpMessageTransport :
                 var responsePayload = _owner._messageSerializer.SerializeInvocationResponse(response);
                 await SendFrameAsync(TcpTransportFrameKind.Response, responsePayload, cancellationToken);
             }
-            catch (Exception exception) when (exception is IOException or SocketException or ObjectDisposedException or OperationCanceledException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                if (!cancellationToken.IsCancellationRequested)
-                {
-                    TraceLog.Write(
-                        "transport",
-                        $"tcp request handling failed on {_owner._localNodeName} from {RemoteNodeName}: {exception.GetType().Name}");
-                }
+            }
+            catch (Exception exception)
+            {
+                TraceLog.Write(
+                    "transport",
+                    $"tcp request handling failed on {_owner._localNodeName} from {RemoteNodeName}: {exception.GetType().Name}: {exception.Message}");
             }
         }
 

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using OrleansReplicaKernel.Diagnostics;
@@ -10,6 +11,7 @@ using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
+using OrleansReplicaKernel.Security;
 using OrleansReplicaKernel.Serialization;
 using OrleansReplicaKernel.Storage;
 using OrleansReplicaKernel.Streaming;
@@ -24,6 +26,7 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly HashSet<Assembly> _binaryCodecAssemblies = [];
     private readonly List<GrainOwnerRecord> _seededOwnerRecords = [];
     private readonly Dictionary<string, IPEndPoint> _tcpNodeEndpoints = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, X509Certificate2> _tcpIdentityCertificates = new(StringComparer.Ordinal);
     private readonly Dictionary<string, GrainImplementationRegistration> _grainImplementations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, IGrainStorage> _namedGrainStorages = new(StringComparer.Ordinal);
     private readonly Dictionary<Type, GrainReferenceRegistration> _grainReferences = new();
@@ -44,6 +47,7 @@ public sealed class OrleansReplicaKernelBuilder
     private TimeSpan _tcpHeartbeatInterval = TimeSpan.FromMilliseconds(250);
     private TimeProvider _timeProvider = TimeProvider.System;
     private bool _useTcpTransport;
+    private bool _useTcpTls;
     private TimeSpan _responseHistoryRetention = TimeSpan.FromMinutes(5);
     private OrleansReplicaKernelMembershipCheckpoint? _membershipCheckpoint;
     private OrleansReplicaKernelRuntimeCheckpoint? _runtimeCheckpoint;
@@ -211,6 +215,12 @@ public sealed class OrleansReplicaKernelBuilder
         return this;
     }
 
+    public OrleansReplicaKernelBuilder UseTcpTls()
+    {
+        _useTcpTls = true;
+        return this;
+    }
+
     public OrleansReplicaKernelBuilder UseMemoryStreamProvider(
         string providerName,
         int maxBatchSize = 32,
@@ -254,6 +264,15 @@ public sealed class OrleansReplicaKernelBuilder
         ArgumentNullException.ThrowIfNull(endpoint);
 
         _tcpNodeEndpoints[nodeName] = endpoint;
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder WithTcpIdentityCertificate(string nodeName, X509Certificate2 certificate)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nodeName);
+        ArgumentNullException.ThrowIfNull(certificate);
+
+        _tcpIdentityCertificates[nodeName] = certificate;
         return this;
     }
 
@@ -573,6 +592,8 @@ public sealed class OrleansReplicaKernelBuilder
         var gatewaySelector = new RoundRobinGatewaySelector(gateways);
         var locator = new GatewayGrainLocator(gatewaySelector);
         var router = new LocalGrainRouter(nodeName, locator);
+        var clientSecurity = BuildTcpTransportSecurity(nodeName, InvocationSourceKind.Client);
+        var clientIdentity = BuildLocalInvocationIdentity(nodeName, InvocationSourceKind.Client);
         var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
         var activationDirectory = new LocalActivationDirectory(
             nodeName,
@@ -595,6 +616,8 @@ public sealed class OrleansReplicaKernelBuilder
             messageSerializer,
             _tcpHeartbeatInterval,
             _timeProvider,
+            InvocationSourceKind.Client,
+            clientSecurity,
             acceptInboundConnections: false,
             allowUnknownInboundNodes: false);
         var runtime = new InProcessRuntime(
@@ -607,7 +630,8 @@ public sealed class OrleansReplicaKernelBuilder
             objectReferenceFactoryRegistry,
             _timeProvider,
             _responseHistoryRetention,
-            InvocationSourceKind.Client);
+            InvocationSourceKind.Client,
+            clientIdentity);
 
         transport.Bind(runtime, runtime);
         transport.Start();
@@ -980,6 +1004,7 @@ public sealed class OrleansReplicaKernelBuilder
             .Where(item => !string.Equals(item.Key, nodeName, StringComparison.Ordinal))
             .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
         var transportMembershipView = BuildTransportMembershipView(nodeName, membership, membershipViews[nodeName]);
+        var localIdentity = BuildLocalInvocationIdentity(nodeName, InvocationSourceKind.ClusterNode);
         var transport = new TcpMessageTransport(
             nodeName,
             localEndpoint,
@@ -988,6 +1013,8 @@ public sealed class OrleansReplicaKernelBuilder
             messageSerializer,
             _tcpHeartbeatInterval,
             _timeProvider,
+            InvocationSourceKind.ClusterNode,
+            BuildTcpTransportSecurity(nodeName, InvocationSourceKind.ClusterNode),
             acceptInboundConnections: true,
             allowUnknownInboundNodes: true);
         var locator = new DirectoryGrainLocator(grainDirectory, grainInterfaceVersions);
@@ -1001,7 +1028,8 @@ public sealed class OrleansReplicaKernelBuilder
             transport,
             objectReferenceFactoryRegistry,
             _timeProvider,
-            _responseHistoryRetention);
+            _responseHistoryRetention,
+            localInvocationIdentity: localIdentity);
 
         transport.Bind(runtime, runtime);
         LocalReminderService? reminderService = null;
@@ -1111,9 +1139,11 @@ public sealed class OrleansReplicaKernelBuilder
                     callbackDirectory, persistentStateFactory, transactionalStateFactory,
                     grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint);
             var router = new LocalGrainRouter(currentNodeName, locator);
+            var localIdentity = BuildLocalInvocationIdentity(currentNodeName, InvocationSourceKind.ClusterNode);
             var runtime = new InProcessRuntime(
                 currentNodeName, failureDetector, locator, router, activationDirectory,
-                transport, objectReferenceFactoryRegistry, _timeProvider, _responseHistoryRetention);
+                transport, objectReferenceFactoryRegistry, _timeProvider, _responseHistoryRetention,
+                localInvocationIdentity: localIdentity);
 
             locators.Add(currentNodeName, locator);
             activationDirectories.Add(currentNodeName, activationDirectory);
@@ -1132,6 +1162,51 @@ public sealed class OrleansReplicaKernelBuilder
         => _membershipTable is null
             ? membershipView
             : new AuthoritativeClusterMembershipView(nodeName, membership, _timeProvider);
+
+    private InvocationIdentity BuildLocalInvocationIdentity(string nodeName, InvocationSourceKind sourceKind)
+    {
+        if (_useTcpTransport && _useTcpTls && _tcpIdentityCertificates.TryGetValue(nodeName, out var certificate))
+        {
+            return InvocationIdentity.CreateAuthenticated(nodeName, sourceKind, certificate);
+        }
+
+        return InvocationIdentity.CreateLocal(nodeName, sourceKind);
+    }
+
+    private TcpTransportSecurityOptions? BuildTcpTransportSecurity(
+        string nodeName,
+        InvocationSourceKind localSourceKind)
+    {
+        if (!_useTcpTls)
+        {
+            return null;
+        }
+
+        if (!_tcpIdentityCertificates.TryGetValue(nodeName, out var localCertificate))
+        {
+            throw new InvalidOperationException(
+                $"TCP TLS is enabled but no identity certificate is registered for '{nodeName}'.");
+        }
+
+        var trustedPeers = _tcpIdentityCertificates
+            .Where(item => !string.Equals(item.Key, nodeName, StringComparison.Ordinal))
+            .Select(item => TcpTransportSecurityOptions.TrustedPeer.Create(
+                item.Key,
+                ResolveIdentitySourceKind(item.Key, localSourceKind),
+                item.Value))
+            .ToArray();
+
+        return new TcpTransportSecurityOptions(localCertificate, trustedPeers);
+    }
+
+    private InvocationSourceKind ResolveIdentitySourceKind(
+        string nodeName,
+        InvocationSourceKind localSourceKind)
+        => _tcpNodeEndpoints.ContainsKey(nodeName)
+            ? InvocationSourceKind.ClusterNode
+            : localSourceKind == InvocationSourceKind.Client
+                ? InvocationSourceKind.ClusterNode
+                : InvocationSourceKind.Client;
 
     private Dictionary<string, LocalReminderService> BuildReminderServices(
         string[] allNodeNames,

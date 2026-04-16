@@ -7,6 +7,7 @@ using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Routing;
+using OrleansReplicaKernel.Security;
 using OrleansReplicaKernel.Streaming;
 using OrleansReplicaKernel.Transactions;
 
@@ -27,6 +28,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _responseHistoryRetention;
     private readonly InvocationSourceKind _sourceKind;
+    private readonly InvocationIdentity _localInvocationIdentity;
     private LocalReminderService? _reminderService;
     private IGrainStreamRuntime? _streamRuntime;
     private readonly Dictionary<Guid, CompletedRequestEntry> _completedRequests = new();
@@ -49,7 +51,8 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         ObjectReferenceFactoryRegistry objectReferences,
         TimeProvider? timeProvider = null,
         TimeSpan? responseHistoryRetention = null,
-        InvocationSourceKind sourceKind = InvocationSourceKind.ClusterNode)
+        InvocationSourceKind sourceKind = InvocationSourceKind.ClusterNode,
+        InvocationIdentity? localInvocationIdentity = null)
     {
         NodeName = nodeName;
         _failureDetector = failureDetector;
@@ -61,6 +64,8 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         _timeProvider = timeProvider ?? TimeProvider.System;
         _responseHistoryRetention = responseHistoryRetention ?? TimeSpan.FromMinutes(5);
         _sourceKind = sourceKind;
+        _localInvocationIdentity = localInvocationIdentity
+            ?? InvocationIdentity.CreateLocal(nodeName, sourceKind);
     }
 
     public string NodeName { get; }
@@ -372,6 +377,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
             new GrainAddress(NodeName, grainId, OwnerVersion: 0),
             invokable,
             _sourceKind,
+            ActivationExecutionContext.CurrentInvocationIdentity ?? _localInvocationIdentity,
             TransactionContext.Current);
         message = OrleansReplicaKernelTelemetry.StampCurrentTraceContext(message);
         var routedAddress = _router.Route(message);

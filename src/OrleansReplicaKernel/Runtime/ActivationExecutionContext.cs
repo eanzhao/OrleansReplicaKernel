@@ -1,6 +1,7 @@
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Reminders;
+using OrleansReplicaKernel.Security;
 using OrleansReplicaKernel.Streaming;
 using OrleansReplicaKernel.Transactions;
 
@@ -24,6 +25,8 @@ public static class ActivationExecutionContext
 
     public static TimeProvider? CurrentTimeProvider => CurrentStateSlot.Value?.TimeProvider;
 
+    public static InvocationIdentity? CurrentInvocationIdentity => CurrentStateSlot.Value?.Identity;
+
     public static TransactionInfo? CurrentTransaction => TransactionContext.Current;
 
     public static async ValueTask<T> RunAsync<T>(
@@ -34,6 +37,7 @@ public static class ActivationExecutionContext
         IGrainReminderRegistry? reminderRegistry,
         IGrainStreamRuntime? streamRuntime,
         TimeProvider timeProvider,
+        InvocationIdentity? identity,
         TransactionInfo? transaction,
         Func<ValueTask<T>> callback)
     {
@@ -46,7 +50,8 @@ public static class ActivationExecutionContext
             timerRegistry,
             reminderRegistry,
             streamRuntime,
-            timeProvider);
+            timeProvider,
+            identity);
 
         try
         {
@@ -65,5 +70,6 @@ public static class ActivationExecutionContext
         IActivationTimerRegistry TimerRegistry,
         IGrainReminderRegistry? ReminderRegistry,
         IGrainStreamRuntime? StreamRuntime,
-        TimeProvider TimeProvider);
+        TimeProvider TimeProvider,
+        InvocationIdentity? Identity);
 }

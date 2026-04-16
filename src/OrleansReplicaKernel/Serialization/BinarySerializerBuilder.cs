@@ -66,6 +66,7 @@ public sealed class BinarySerializerBuilder
         AddCodec(new GrainIdBinaryCodec());
         AddCodec(new GrainAddressBinaryCodec());
         AddCodec(new ObjectReferenceDataBinaryCodec());
+        AddCodec(new InvocationIdentityBinaryCodec());
         AddCodec(new TransactionInfoBinaryCodec());
         AddCodec(new InvocationMessageBinaryCodec());
         AddCodec(new InvocationResponseMessageBinaryCodec());

@@ -2,6 +2,7 @@ using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Runtime;
+using OrleansReplicaKernel.Security;
 using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Serialization;
@@ -409,6 +410,58 @@ internal sealed class ObjectReferenceDataBinaryCodec : BinaryObjectCodec<ObjectR
     }
 }
 
+internal sealed class InvocationIdentityBinaryCodec : BinaryObjectCodec<InvocationIdentity>
+{
+    public override string Alias => "orleans.security.invocation-identity";
+
+    protected override InvocationIdentity ReadFields(ref BinaryObjectReader reader, BinarySerializer serializer)
+    {
+        InvocationSourceKind? sourceKind = null;
+        string? name = null;
+        bool? isAuthenticated = null;
+        string? certificateThumbprint = null;
+        string? certificateSubject = null;
+
+        while (reader.TryReadField(out var fieldId, out var payload))
+        {
+            switch (fieldId)
+            {
+                case 1:
+                    sourceKind = (InvocationSourceKind)serializer.Read<int>(payload);
+                    break;
+                case 2:
+                    name = serializer.Read<string>(payload);
+                    break;
+                case 3:
+                    isAuthenticated = serializer.Read<bool>(payload);
+                    break;
+                case 4:
+                    certificateThumbprint = serializer.ReadOptional<string>(payload);
+                    break;
+                case 5:
+                    certificateSubject = serializer.ReadOptional<string>(payload);
+                    break;
+            }
+        }
+
+        return new InvocationIdentity(
+            BinaryCodecRequired.Require(sourceKind, nameof(InvocationIdentity.SourceKind)),
+            BinaryCodecRequired.Require(name, nameof(InvocationIdentity.Name)),
+            BinaryCodecRequired.Require(isAuthenticated, nameof(InvocationIdentity.IsAuthenticated)),
+            certificateThumbprint,
+            certificateSubject);
+    }
+
+    protected override void WriteFields(BinaryObjectWriter writer, InvocationIdentity value, BinarySerializer serializer)
+    {
+        writer.WriteField(1, (int)value.SourceKind, serializer);
+        writer.WriteField(2, value.Name, serializer);
+        writer.WriteField(3, value.IsAuthenticated, serializer);
+        writer.WriteOptionalField(4, value.CertificateThumbprint, serializer);
+        writer.WriteOptionalField(5, value.CertificateSubject, serializer);
+    }
+}
+
 internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<InvocationMessage>
 {
     public override string Alias => "orleans.message.invocation";
@@ -424,6 +477,7 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         GrainAddress? target = null;
         IInvokable? invokable = null;
         var sourceKind = InvocationSourceKind.ClusterNode;
+        InvocationIdentity? identity = null;
         TransactionInfo? transaction = null;
         string? traceParent = null;
         string? traceState = null;
@@ -460,12 +514,15 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
                     sourceKind = (InvocationSourceKind)serializer.Read<int>(payload);
                     break;
                 case 10:
-                    transaction = serializer.ReadOptional<TransactionInfo>(payload);
+                    identity = serializer.ReadOptional<InvocationIdentity>(payload);
                     break;
                 case 11:
-                    traceParent = serializer.ReadOptional<string>(payload);
+                    transaction = serializer.ReadOptional<TransactionInfo>(payload);
                     break;
                 case 12:
+                    traceParent = serializer.ReadOptional<string>(payload);
+                    break;
+                case 13:
                     traceState = serializer.ReadOptional<string>(payload);
                     break;
             }
@@ -481,6 +538,7 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
             BinaryCodecRequired.Require(target, nameof(InvocationMessage.Target)),
             invokable ?? throw new InvalidOperationException("InvocationMessage is missing invokable payload."),
             sourceKind,
+            identity,
             transaction,
             traceParent,
             traceState);
@@ -497,9 +555,10 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         writer.WriteField(7, value.Target, serializer);
         writer.WriteDynamicField(8, value.Invokable, serializer);
         writer.WriteField(9, (int)value.SourceKind, serializer);
-        writer.WriteOptionalField(10, value.Transaction, serializer);
-        writer.WriteOptionalField(11, value.TraceParent, serializer);
-        writer.WriteOptionalField(12, value.TraceState, serializer);
+        writer.WriteOptionalField(10, value.Identity, serializer);
+        writer.WriteOptionalField(11, value.Transaction, serializer);
+        writer.WriteOptionalField(12, value.TraceParent, serializer);
+        writer.WriteOptionalField(13, value.TraceState, serializer);
     }
 }
 

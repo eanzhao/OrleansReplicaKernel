@@ -111,6 +111,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                     ResolveReminderRegistry(runtime),
                     ResolveStreamRuntime(runtime),
                     _timeProvider,
+                    message.Identity,
                     message.Transaction,
                     async () =>
                     {
@@ -444,6 +445,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         ResolveReminderRegistry(runtime),
                         ResolveStreamRuntime(runtime),
                         _timeProvider,
+                        identity: null,
                         transaction: null,
                         async () =>
                         {
@@ -484,6 +486,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         ResolveReminderRegistry(runtime),
                         ResolveStreamRuntime(runtime),
                         _timeProvider,
+                        identity: null,
                         transaction: null,
                         async () =>
                         {
@@ -546,6 +549,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                 ResolveReminderRegistry(runtime),
                 ResolveStreamRuntime(runtime),
                 _timeProvider,
+                identity: null,
                 transaction: null,
                 async () =>
                 {

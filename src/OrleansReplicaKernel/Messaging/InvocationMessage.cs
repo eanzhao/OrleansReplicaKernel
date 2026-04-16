@@ -1,5 +1,6 @@
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
+using OrleansReplicaKernel.Security;
 using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Messaging;
@@ -14,6 +15,7 @@ public sealed record InvocationMessage(
     GrainAddress Target,
     IInvokable Invokable,
     InvocationSourceKind SourceKind = InvocationSourceKind.ClusterNode,
+    InvocationIdentity? Identity = null,
     TransactionInfo? Transaction = null,
     string? TraceParent = null,
     string? TraceState = null);
