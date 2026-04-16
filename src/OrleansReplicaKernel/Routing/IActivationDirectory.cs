@@ -5,6 +5,8 @@ namespace OrleansReplicaKernel.Routing;
 
 public interface IActivationDirectory : IAsyncDisposable
 {
+    int GetActivationCount();
+
     ActivationEntry GetOrCreate(GrainAddress address);
 
     ValueTask<ActivationHandoffRecord?> PrepareHandoffAsync(GrainAddress address);

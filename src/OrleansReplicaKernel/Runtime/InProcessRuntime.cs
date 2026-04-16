@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.Diagnostics;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
@@ -111,6 +113,12 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         CancellationToken cancellationToken = default)
     {
         var requestId = Guid.NewGuid();
+        using var activity = OrleansReplicaKernelTelemetry.StartInvokeActivity(
+            NodeName,
+            grainId,
+            invokable,
+            _sourceKind,
+            requestId);
 
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
@@ -219,6 +227,9 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         InvocationMessage message,
         CancellationToken cancellationToken = default)
     {
+        using var activity = OrleansReplicaKernelTelemetry.StartReceiveActivity(message, NodeName);
+        OrleansReplicaKernelTelemetry.RecordMessageLatency(message, NodeName, _timeProvider.GetUtcNow());
+
         TraceLog.Write(
             "runtime",
             $"receive request {message.RequestId:N}/{message.AttemptId:N}/#{message.AttemptSequence} on {NodeName} from {message.SourceNodeName}");
@@ -268,6 +279,11 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         }
 
         var response = await requestTask;
+        if (response.Error is { } error)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, error.Message);
+        }
+
         return joinedInflight
             ? response with
             {
@@ -351,11 +367,13 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
             ActivationExecutionContext.CurrentRequestChainId ?? requestId,
             attemptId,
             attemptSequence,
+            _timeProvider.GetUtcNow(),
             NodeName,
             new GrainAddress(NodeName, grainId, OwnerVersion: 0),
             invokable,
             _sourceKind,
             TransactionContext.Current);
+        message = OrleansReplicaKernelTelemetry.StampCurrentTraceContext(message);
         var routedAddress = _router.Route(message);
         var routedMessage = message with { Target = routedAddress };
 
@@ -500,22 +518,23 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         InvocationMessage message,
         CancellationToken cancellationToken)
     {
+        var forwardedMessage = OrleansReplicaKernelTelemetry.StampCurrentTraceContext(message);
         var completion = RegisterPendingResponse(
-            message.RequestId,
-            message.AttemptId,
-            message.AttemptSequence);
+            forwardedMessage.RequestId,
+            forwardedMessage.AttemptId,
+            forwardedMessage.AttemptSequence);
 
         try
         {
-            await _transport.SendAsync(message, cancellationToken);
+            await _transport.SendAsync(forwardedMessage, cancellationToken);
             return await completion.Task.WaitAsync(cancellationToken);
         }
         catch
         {
             RemovePendingResponse(
-                message.AttemptId,
-                message.RequestId,
-                message.AttemptSequence,
+                forwardedMessage.AttemptId,
+                forwardedMessage.RequestId,
+                forwardedMessage.AttemptSequence,
                 stopWaiting: true);
             throw;
         }

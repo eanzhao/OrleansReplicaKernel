@@ -1,4 +1,5 @@
 using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.Diagnostics;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
@@ -14,6 +15,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         ActivationHandoffRecord Record);
 
     private readonly object _lock = new();
+    private readonly string _localNodeName;
     private readonly LocalCallbackDirectory _callbackDirectory;
     private readonly TimeProvider _timeProvider;
     private readonly IReadOnlyDictionary<string, Func<GrainActivationContext, object>> _grainFactories;
@@ -33,6 +35,24 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null,
         TimeProvider? timeProvider = null)
         : this(
+            "<local>",
+            grainFactories,
+            grainCollectionPolicies,
+            callbackDirectory,
+            grainSchedulingPolicies,
+            timeProvider)
+    {
+    }
+
+    public LocalActivationDirectory(
+        string localNodeName,
+        IReadOnlyDictionary<string, Func<object>> grainFactories,
+        IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
+        LocalCallbackDirectory callbackDirectory,
+        IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null,
+        TimeProvider? timeProvider = null)
+        : this(
+            localNodeName,
             WrapFactories(grainFactories),
             grainCollectionPolicies,
             callbackDirectory,
@@ -45,6 +65,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     }
 
     internal LocalActivationDirectory(
+        string localNodeName,
         IReadOnlyDictionary<string, Func<GrainActivationContext, object>> grainFactories,
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
@@ -54,6 +75,9 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint? checkpoint = null)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(localNodeName);
+
+        _localNodeName = localNodeName;
         _grainFactories = grainFactories;
         _grainCollectionPolicies = grainCollectionPolicies;
         _callbackDirectory = callbackDirectory;
@@ -71,6 +95,14 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         {
             _recoveredMetadata[record.GrainId] = record;
             _fencedOwnerVersions[record.GrainId] = record.OwnerVersion;
+        }
+    }
+
+    public int GetActivationCount()
+    {
+        lock (_lock)
+        {
+            return _activations.Count;
         }
     }
 
@@ -199,6 +231,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             }
 
             _activations.Add(address.GrainId, created);
+            OrleansReplicaKernelTelemetry.RecordActivationDelta(1, address.GrainId, _localNodeName);
             TraceLog.Write("directory", $"register activation {address.GrainId} on {address.NodeName}");
             return created;
         }
@@ -320,6 +353,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
         await activation.QuiesceAsync();
         await activation.DisposeAsync(reason);
+        OrleansReplicaKernelTelemetry.RecordActivationDelta(-1, address.GrainId, _localNodeName);
         return true;
     }
 
@@ -355,6 +389,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         {
             await activation.QuiesceAsync();
             await activation.DisposeAsync(ActivationDeactivationReason.IdleCollection);
+            OrleansReplicaKernelTelemetry.RecordActivationDelta(-1, activation.GrainId, _localNodeName);
         }
 
         return collected.Count;
@@ -374,6 +409,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         {
             await activation.QuiesceAsync();
             await activation.DisposeAsync(reason);
+            OrleansReplicaKernelTelemetry.RecordActivationDelta(-1, activation.GrainId, _localNodeName);
         }
 
         return activations.Count;
@@ -408,7 +444,25 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint checkpoint)
+        => Restore(
+            "<local>",
+            grainFactories,
+            grainCollectionPolicies,
+            callbackDirectory,
+            grainSchedulingPolicies,
+            timeProvider,
+            checkpoint);
+
+    public static LocalActivationDirectory Restore(
+        string localNodeName,
+        IReadOnlyDictionary<string, Func<object>> grainFactories,
+        IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
+        LocalCallbackDirectory callbackDirectory,
+        IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
+        TimeProvider? timeProvider,
+        ActivationDirectoryCheckpoint checkpoint)
         => new(
+            localNodeName,
             WrapFactories(grainFactories),
             grainCollectionPolicies,
             callbackDirectory,
@@ -419,6 +473,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             checkpoint);
 
     internal static LocalActivationDirectory Restore(
+        string localNodeName,
         IReadOnlyDictionary<string, Func<GrainActivationContext, object>> grainFactories,
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
@@ -428,6 +483,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint checkpoint)
         => new(
+            localNodeName,
             grainFactories,
             grainCollectionPolicies,
             callbackDirectory,

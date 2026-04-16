@@ -21,6 +21,7 @@ public sealed class BinarySerializationTests
             requestChainId,
             attemptId,
             AttemptSequence: 2,
+            CreatedUtc: new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero),
             SourceNodeName: "dev-node-1",
             Target: new GrainAddress("dev-node-2", new GrainId("echo", "binary-roundtrip"), OwnerVersion: 7),
             Invokable: new EchoPingSlowInvokable("hello-binary", 42),

@@ -9,8 +9,11 @@ public sealed record InvocationMessage(
     Guid RequestChainId,
     Guid AttemptId,
     int AttemptSequence,
+    DateTimeOffset CreatedUtc,
     string SourceNodeName,
     GrainAddress Target,
     IInvokable Invokable,
     InvocationSourceKind SourceKind = InvocationSourceKind.ClusterNode,
-    TransactionInfo? Transaction = null);
+    TransactionInfo? Transaction = null,
+    string? TraceParent = null,
+    string? TraceState = null);

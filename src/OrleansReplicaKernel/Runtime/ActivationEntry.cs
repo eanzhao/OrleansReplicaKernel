@@ -1,4 +1,5 @@
 using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.Diagnostics;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
@@ -113,8 +114,20 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                     message.Transaction,
                     async () =>
                     {
+                        var startedAt = _timeProvider.GetTimestamp();
                         TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");
-                        return await message.Invokable.InvokeAsync(_instance, turnToken);
+                        try
+                        {
+                            return await message.Invokable.InvokeAsync(_instance, turnToken);
+                        }
+                        finally
+                        {
+                            OrleansReplicaKernelTelemetry.RecordTurnDuration(
+                                _timeProvider.GetElapsedTime(startedAt),
+                                GrainId,
+                                message.Invokable.MethodName,
+                                runtime is InProcessRuntime inProcessRuntime ? inProcessRuntime.NodeName : "<unknown>");
+                        }
                     }),
                 cancellationToken);
         }

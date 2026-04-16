@@ -419,11 +419,14 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         Guid? requestChainId = null;
         Guid? attemptId = null;
         int? attemptSequence = null;
+        DateTimeOffset? createdUtc = null;
         string? sourceNodeName = null;
         GrainAddress? target = null;
         IInvokable? invokable = null;
         var sourceKind = InvocationSourceKind.ClusterNode;
         TransactionInfo? transaction = null;
+        string? traceParent = null;
+        string? traceState = null;
 
         while (reader.TryReadField(out var fieldId, out var payload))
         {
@@ -442,19 +445,28 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
                     attemptSequence = serializer.Read<int>(payload);
                     break;
                 case 5:
-                    sourceNodeName = serializer.Read<string>(payload);
+                    createdUtc = serializer.Read<DateTimeOffset>(payload);
                     break;
                 case 6:
-                    target = serializer.Read<GrainAddress>(payload);
+                    sourceNodeName = serializer.Read<string>(payload);
                     break;
                 case 7:
-                    invokable = serializer.ReadDynamic(payload) as IInvokable;
+                    target = serializer.Read<GrainAddress>(payload);
                     break;
                 case 8:
-                    sourceKind = (InvocationSourceKind)serializer.Read<int>(payload);
+                    invokable = serializer.ReadDynamic(payload) as IInvokable;
                     break;
                 case 9:
+                    sourceKind = (InvocationSourceKind)serializer.Read<int>(payload);
+                    break;
+                case 10:
                     transaction = serializer.ReadOptional<TransactionInfo>(payload);
+                    break;
+                case 11:
+                    traceParent = serializer.ReadOptional<string>(payload);
+                    break;
+                case 12:
+                    traceState = serializer.ReadOptional<string>(payload);
                     break;
             }
         }
@@ -464,11 +476,14 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
             BinaryCodecRequired.Require(requestChainId, nameof(InvocationMessage.RequestChainId)),
             BinaryCodecRequired.Require(attemptId, nameof(InvocationMessage.AttemptId)),
             BinaryCodecRequired.Require(attemptSequence, nameof(InvocationMessage.AttemptSequence)),
+            BinaryCodecRequired.Require(createdUtc, nameof(InvocationMessage.CreatedUtc)),
             BinaryCodecRequired.Require(sourceNodeName, nameof(InvocationMessage.SourceNodeName)),
             BinaryCodecRequired.Require(target, nameof(InvocationMessage.Target)),
             invokable ?? throw new InvalidOperationException("InvocationMessage is missing invokable payload."),
             sourceKind,
-            transaction);
+            transaction,
+            traceParent,
+            traceState);
     }
 
     protected override void WriteFields(BinaryObjectWriter writer, InvocationMessage value, BinarySerializer serializer)
@@ -477,11 +492,14 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         writer.WriteField(2, value.RequestChainId, serializer);
         writer.WriteField(3, value.AttemptId, serializer);
         writer.WriteField(4, value.AttemptSequence, serializer);
-        writer.WriteField(5, value.SourceNodeName, serializer);
-        writer.WriteField(6, value.Target, serializer);
-        writer.WriteDynamicField(7, value.Invokable, serializer);
-        writer.WriteField(8, (int)value.SourceKind, serializer);
-        writer.WriteOptionalField(9, value.Transaction, serializer);
+        writer.WriteField(5, value.CreatedUtc, serializer);
+        writer.WriteField(6, value.SourceNodeName, serializer);
+        writer.WriteField(7, value.Target, serializer);
+        writer.WriteDynamicField(8, value.Invokable, serializer);
+        writer.WriteField(9, (int)value.SourceKind, serializer);
+        writer.WriteOptionalField(10, value.Transaction, serializer);
+        writer.WriteOptionalField(11, value.TraceParent, serializer);
+        writer.WriteOptionalField(12, value.TraceState, serializer);
     }
 }
 

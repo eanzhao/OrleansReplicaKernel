@@ -1,5 +1,8 @@
 using System.Net;
 using System.Reflection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using OrleansReplicaKernel.Diagnostics;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
@@ -29,6 +32,7 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
     private readonly Dictionary<string, MemoryStreamProviderConfiguration> _memoryStreamProviders = new(StringComparer.Ordinal);
     private IGrainDirectoryTable? _grainDirectoryTable;
+    private ILoggerFactory? _loggerFactory;
     private IMembershipTable? _membershipTable;
     private IReminderTable? _reminderTable;
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
@@ -42,6 +46,7 @@ public sealed class OrleansReplicaKernelBuilder
     private OrleansReplicaKernelMembershipCheckpoint? _membershipCheckpoint;
     private OrleansReplicaKernelRuntimeCheckpoint? _runtimeCheckpoint;
     private IGrainStorage? _defaultGrainStorage;
+    private string? _healthCheckUrlPrefix;
 
     public OrleansReplicaKernelBuilder AddGrain<TContract, TGrain>(
         string grainType,
@@ -137,6 +142,27 @@ public sealed class OrleansReplicaKernelBuilder
         ArgumentNullException.ThrowIfNull(assembly);
         _binaryCodecAssemblies.Add(assembly);
         return this;
+    }
+
+    public OrleansReplicaKernelBuilder WithLoggerFactory(ILoggerFactory loggerFactory)
+    {
+        _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseHealthCheckEndpoint(string urlPrefix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(urlPrefix);
+        _healthCheckUrlPrefix = urlPrefix.EndsWith("/", StringComparison.Ordinal)
+            ? urlPrefix
+            : urlPrefix + "/";
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseHealthCheckEndpoint(IPEndPoint endpoint)
+    {
+        ArgumentNullException.ThrowIfNull(endpoint);
+        return UseHealthCheckEndpoint($"http://{endpoint.Address}:{endpoint.Port}/");
     }
 
     public OrleansReplicaKernelBuilder SeedGrainOwner(
@@ -364,6 +390,7 @@ public sealed class OrleansReplicaKernelBuilder
 
     public OrleansReplicaKernelHost Build(string nodeName, params string[] peerNodeNames)
     {
+        TraceLog.Configure(_loggerFactory);
         RegisterGeneratedGrainImplementations();
         RegisterGeneratedGrainReferences();
         RegisterGeneratedObjectReferences();
@@ -424,6 +451,8 @@ public sealed class OrleansReplicaKernelBuilder
         var reminderServices = BuildReminderServices(allNodeNames, grainDirectory, runtimes);
 
         var bindings = BuildBindings();
+        var healthSnapshotProvider = CreateHealthSnapshotProvider(nodeName, membership, activationDirectories, runtimes);
+        var healthServer = StartHealthServerIfConfigured(healthSnapshotProvider);
 
         return new OrleansReplicaKernelHost(
             nodeName,
@@ -448,13 +477,17 @@ public sealed class OrleansReplicaKernelBuilder
                 .Concat(reminderServices.Values)
                 .Concat(runtimes.Values)
                 .Concat(callbackDirectories.Values)
+                .Concat(healthServer is null ? [] : [healthServer])
                 .ToArray(),
             transactionClient,
+            healthSnapshotProvider,
+            healthServer?.UrlPrefix,
             bindings);
     }
 
     public OrleansReplicaKernelClient BuildClient(string nodeName, params string[] gatewayNodeNames)
     {
+        TraceLog.Configure(_loggerFactory);
         RegisterGeneratedGrainReferences();
         RegisterGeneratedObjectReferences();
 
@@ -498,6 +531,7 @@ public sealed class OrleansReplicaKernelBuilder
         var router = new LocalGrainRouter(nodeName, locator);
         var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
         var activationDirectory = new LocalActivationDirectory(
+            nodeName,
             new Dictionary<string, Func<GrainActivationContext, object>>(StringComparer.Ordinal),
             new Dictionary<string, GrainTypeCollectionPolicy>(StringComparer.Ordinal),
             callbackDirectory,
@@ -833,6 +867,7 @@ public sealed class OrleansReplicaKernelBuilder
             .FirstOrDefault(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal));
         var activationDirectory = activationCheckpoint is null
             ? new LocalActivationDirectory(
+                nodeName,
                 grainPolicies.Factories,
                 grainPolicies.CollectionPolicies,
                 callbackDirectory,
@@ -841,6 +876,7 @@ public sealed class OrleansReplicaKernelBuilder
                 grainPolicies.SchedulingPolicies,
                 _timeProvider)
             : LocalActivationDirectory.Restore(
+                nodeName,
                 grainPolicies.Factories,
                 grainPolicies.CollectionPolicies,
                 callbackDirectory,
@@ -908,6 +944,8 @@ public sealed class OrleansReplicaKernelBuilder
             [nodeName] = runtime
         };
         var probeService = new TcpClusterProbeService(nodeName, membership, _tcpNodeEndpoints, failureDetector);
+        var healthSnapshotProvider = CreateHealthSnapshotProvider(nodeName, membership, activationDirectories, runtimes);
+        var healthServer = StartHealthServerIfConfigured(healthSnapshotProvider);
 
         return new OrleansReplicaKernelHost(
             nodeName,
@@ -929,9 +967,15 @@ public sealed class OrleansReplicaKernelBuilder
             objectReferenceFactoryRegistry,
             runtimes,
             reminderService is null
-                ? [runtime, callbackDirectory, transport]
-                : [reminderService, runtime, callbackDirectory, transport],
+                ? healthServer is null
+                    ? [runtime, callbackDirectory, transport]
+                    : [runtime, callbackDirectory, transport, healthServer]
+                : healthServer is null
+                    ? [reminderService, runtime, callbackDirectory, transport]
+                    : [reminderService, runtime, callbackDirectory, transport, healthServer],
             transactionClient,
+            healthSnapshotProvider,
+            healthServer?.UrlPrefix,
             bindings);
     }
 
@@ -967,10 +1011,12 @@ public sealed class OrleansReplicaKernelBuilder
                 .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));
             var activationDirectory = activationCheckpoint is null
                 ? new LocalActivationDirectory(
+                    currentNodeName,
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
                     callbackDirectory, persistentStateFactory, transactionalStateFactory,
                     grainPolicies.SchedulingPolicies, _timeProvider)
                 : LocalActivationDirectory.Restore(
+                    currentNodeName,
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
                     callbackDirectory, persistentStateFactory, transactionalStateFactory,
                     grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint);
@@ -1037,6 +1083,51 @@ public sealed class OrleansReplicaKernelBuilder
         }
 
         return providers;
+    }
+
+    private Func<KernelHealthSnapshot> CreateHealthSnapshotProvider(
+        string primaryNodeName,
+        IClusterMembership membership,
+        IReadOnlyDictionary<string, IActivationDirectory> activationDirectories,
+        IReadOnlyDictionary<string, InProcessRuntime> runtimes)
+        => () =>
+        {
+            var nodes = membership.GetMembers()
+                .OrderBy(item => item.NodeName, StringComparer.Ordinal)
+                .Select(member =>
+                {
+                    activationDirectories.TryGetValue(member.NodeName, out var activationDirectory);
+                    runtimes.TryGetValue(member.NodeName, out var runtime);
+                    return new KernelNodeHealthSnapshot(
+                        member.NodeName,
+                        member.HealthStatus,
+                        activationDirectory?.GetActivationCount() ?? 0,
+                        runtime?.GetResponseDispositionSnapshot()
+                        ?? new ResponseDispositionSnapshot(0, 0, 0, 0, 0, 0, 0));
+                })
+                .ToArray();
+
+            return new KernelHealthSnapshot(
+                primaryNodeName,
+                _timeProvider.GetUtcNow(),
+                membership.CurrentEpoch,
+                nodes.All(item => item.HealthStatus == NodeHealthStatus.Healthy),
+                nodes);
+        };
+
+    private KernelHealthServer? StartHealthServerIfConfigured(Func<KernelHealthSnapshot> snapshotProvider)
+    {
+        if (string.IsNullOrWhiteSpace(_healthCheckUrlPrefix))
+        {
+            return null;
+        }
+
+        var healthServer = new KernelHealthServer(
+            _healthCheckUrlPrefix,
+            snapshotProvider,
+            _loggerFactory ?? NullLoggerFactory.Instance);
+        healthServer.Start();
+        return healthServer;
     }
 
     private void RegisterGeneratedGrainImplementations()

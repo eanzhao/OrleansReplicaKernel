@@ -13,6 +13,7 @@ var message = new InvocationMessage(
     Guid.NewGuid(),
     Guid.NewGuid(),
     AttemptSequence: 1,
+    CreatedUtc: DateTimeOffset.UtcNow,
     SourceNodeName: "bench-source",
     Target: new GrainAddress("bench-target", new GrainId("echo", "bench"), OwnerVersion: 11),
     Invokable: new EchoPingSlowInvokable("benchmark-serialization-runtime", 25));

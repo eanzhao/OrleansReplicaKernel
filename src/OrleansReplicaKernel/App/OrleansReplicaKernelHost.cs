@@ -1,3 +1,4 @@
+using OrleansReplicaKernel.Diagnostics;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Routing;
@@ -28,6 +29,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
     private readonly IReadOnlyList<IAsyncDisposable> _managedNodes;
     private readonly IReadOnlyDictionary<Type, OrleansReplicaKernelRegistration> _registrations;
     private readonly TransactionClient _transactionClient;
+    private readonly Func<KernelHealthSnapshot> _healthSnapshotProvider;
 
     internal OrleansReplicaKernelHost(
         string nodeName,
@@ -50,6 +52,8 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         IReadOnlyDictionary<string, InProcessRuntime> runtimes,
         IReadOnlyList<IAsyncDisposable> managedNodes,
         TransactionClient transactionClient,
+        Func<KernelHealthSnapshot> healthSnapshotProvider,
+        string? healthCheckUrlPrefix,
         IReadOnlyDictionary<Type, OrleansReplicaKernelRegistration> registrations)
     {
         _nodeName = nodeName;
@@ -72,10 +76,14 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         _runtimes = runtimes;
         _managedNodes = managedNodes;
         _transactionClient = transactionClient ?? throw new ArgumentNullException(nameof(transactionClient));
+        _healthSnapshotProvider = healthSnapshotProvider ?? throw new ArgumentNullException(nameof(healthSnapshotProvider));
+        HealthCheckUrlPrefix = healthCheckUrlPrefix;
         _registrations = registrations;
     }
 
     public TimeProvider TimeProvider { get; }
+
+    public string? HealthCheckUrlPrefix { get; }
 
     public TContract GetGrain<TContract>(string key)
         where TContract : class
@@ -140,6 +148,8 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
 
     public TimeSpan GetElapsedTime(long startingTimestamp, long endingTimestamp) =>
         TimeProvider.GetElapsedTime(startingTimestamp, endingTimestamp);
+
+    public KernelHealthSnapshot GetHealthSnapshot() => _healthSnapshotProvider();
 
     public async Task<T> WaitForAsync<T>(
         Func<ValueTask<T>> probe,

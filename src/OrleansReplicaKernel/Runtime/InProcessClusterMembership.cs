@@ -1,4 +1,5 @@
 using OrleansReplicaKernel.App;
+using OrleansReplicaKernel.Diagnostics;
 
 namespace OrleansReplicaKernel.Runtime;
 
@@ -62,6 +63,11 @@ public sealed class InProcessClusterMembership : IClusterMembership
             TraceLog.Write(
                 "membership",
                 $"view change epoch={viewChange.Epoch} node={nodeName} <none> -> {NodeHealthStatus.Healthy} reason={viewChange.Reason}");
+            OrleansReplicaKernelTelemetry.RecordMembershipChange(
+                nodeName,
+                nodeName,
+                previousStatus: null,
+                NodeHealthStatus.Healthy);
             return;
         }
     }
@@ -132,6 +138,11 @@ public sealed class InProcessClusterMembership : IClusterMembership
             TraceLog.Write(
                 "membership",
                 $"view change epoch={viewChange.Epoch} node={nodeName} {viewChange.PreviousStatus} -> {viewChange.CurrentStatus} reason={viewChange.Reason}");
+            OrleansReplicaKernelTelemetry.RecordMembershipChange(
+                nodeName,
+                nodeName,
+                viewChange.PreviousStatus,
+                viewChange.CurrentStatus);
             return;
         }
     }

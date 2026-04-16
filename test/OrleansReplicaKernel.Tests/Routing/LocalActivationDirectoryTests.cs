@@ -110,7 +110,7 @@ public sealed class LocalActivationDirectoryTests
             new LocalCallbackDirectory(),
             grainSchedulingPolicies: null,
             timeProvider: restoreTimeProvider,
-            checkpoint);
+            checkpoint: checkpoint);
 
         Assert.Throws<StaleGrainAddressException>(
             () => restored.GetOrCreate(new GrainAddress("node-a", grainId, OwnerVersion: 6)));
