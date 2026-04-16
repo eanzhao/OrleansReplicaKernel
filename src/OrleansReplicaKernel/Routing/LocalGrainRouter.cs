@@ -28,6 +28,15 @@ public sealed class LocalGrainRouter : IGrainRouter
             return new GrainAddress(callbackNodeName, message.Target.GrainId, OwnerVersion: 0);
         }
 
+        if (SystemTargetId.IsSystemTarget(message.Target.GrainId))
+        {
+            var systemTargetId = SystemTargetId.FromGrainId(message.Target.GrainId);
+            TraceLog.Write(
+                "routing",
+                $"{message.Target.GrainId} resolved to system target on {systemTargetId.NodeName}");
+            return new GrainAddress(systemTargetId.NodeName, message.Target.GrainId, OwnerVersion: 0);
+        }
+
         var requestedInterface = GrainInterfaceVersionDescriptor.FromInvocation(
             message.Target.GrainId,
             message.Invokable);

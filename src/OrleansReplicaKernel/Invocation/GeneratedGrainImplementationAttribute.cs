@@ -20,4 +20,8 @@ public sealed class GeneratedGrainImplementationAttribute : Attribute
     public bool PreferLocalPlacement { get; set; }
 
     public string[] InterleavableMethods { get; set; } = [];
+
+    public bool IsReentrant { get; set; }
+
+    public string? MayInterleavePredicateMethodName { get; set; }
 }

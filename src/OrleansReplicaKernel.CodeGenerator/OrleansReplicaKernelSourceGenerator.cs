@@ -11,6 +11,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
     private const string AlwaysInterleaveAttributeName = "OrleansReplicaKernel.CodeGeneration.AlwaysInterleaveAttribute";
     private const string PreferLocalPlacementAttributeName = "OrleansReplicaKernel.CodeGeneration.PreferLocalPlacementAttribute";
     private const string CollectionAgeLimitAttributeName = "OrleansReplicaKernel.CodeGeneration.CollectionAgeLimitAttribute";
+    private const string ReentrantAttributeName = "OrleansReplicaKernel.CodeGeneration.ReentrantAttribute";
+    private const string MayInterleaveAttributeName = "OrleansReplicaKernel.CodeGeneration.MayInterleaveAttribute";
     private const string GrainInterfaceVersionAttributeName = "OrleansReplicaKernel.Versioning.GrainInterfaceVersionAttribute";
 
     private static readonly DiagnosticDescriptor MissingGrainImplementationDescriptor = new(
@@ -192,6 +194,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
         string AliasPrefix,
         int? CollectionAgeLimitMilliseconds,
         bool PreferLocalPlacement,
+        bool IsReentrant,
+        string? MayInterleavePredicateMethodName,
         ImmutableArray<string> InterleavableMethods,
         ImmutableArray<MethodModel> Methods)
     {
@@ -242,6 +246,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
 
             var collectionAgeLimit = ResolveCollectionAgeLimitMilliseconds(implementation);
             var preferLocalPlacement = HasAttribute(implementation, PreferLocalPlacementAttributeName);
+            var isReentrant = HasAttribute(implementation, ReentrantAttributeName);
+            var mayInterleavePredicateMethodName = GetMayInterleavePredicateMethodName(implementation);
             var interleavableMethods = methodModels
                 .Where((methodModel, index) =>
                 {
@@ -270,6 +276,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
                 GetAliasPrefix(namespaceName),
                 collectionAgeLimit,
                 preferLocalPlacement,
+                isReentrant,
+                mayInterleavePredicateMethodName,
                 interleavableMethods,
                 methodModels.ToImmutable());
         }
@@ -319,6 +327,18 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
             if (PreferLocalPlacement)
             {
                 builder.Append(", PreferLocalPlacement = true");
+            }
+
+            if (IsReentrant)
+            {
+                builder.Append(", IsReentrant = true");
+            }
+
+            if (MayInterleavePredicateMethodName is not null)
+            {
+                builder.Append(", MayInterleavePredicateMethodName = \"")
+                    .Append(MayInterleavePredicateMethodName)
+                    .Append("\"");
             }
 
             if (InterleavableMethods.Length > 0)
@@ -1170,6 +1190,25 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
 
             if (attribute.ConstructorArguments.Length == 1
                 && attribute.ConstructorArguments[0].Value is int value)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? GetMayInterleavePredicateMethodName(INamedTypeSymbol implementation)
+    {
+        foreach (var attribute in implementation.GetAttributes())
+        {
+            if (!string.Equals(attribute.AttributeClass?.ToDisplayString(), MayInterleaveAttributeName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (attribute.ConstructorArguments.Length == 1
+                && attribute.ConstructorArguments[0].Value is string value)
             {
                 return value;
             }

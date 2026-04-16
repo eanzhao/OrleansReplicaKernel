@@ -67,6 +67,8 @@ public sealed class OrleansReplicaKernelBuilder
             collectionAgeLimit: null,
             preferLocalPlacement: false,
             interleavableMethods: null,
+            isReentrant: false,
+            mayInterleavePredicateMethodName: null,
             isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
@@ -92,6 +94,8 @@ public sealed class OrleansReplicaKernelBuilder
             collectionAgeLimit: null,
             preferLocalPlacement: false,
             interleavableMethods: null,
+            isReentrant: false,
+            mayInterleavePredicateMethodName: null,
             isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
@@ -595,6 +599,7 @@ public sealed class OrleansReplicaKernelBuilder
         var clientSecurity = BuildTcpTransportSecurity(nodeName, InvocationSourceKind.Client);
         var clientIdentity = BuildLocalInvocationIdentity(nodeName, InvocationSourceKind.Client);
         var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
+        var systemTargetDirectory = new SystemTargetDirectory(nodeName, _timeProvider);
         var activationDirectory = new LocalActivationDirectory(
             nodeName,
             new Dictionary<string, Func<GrainActivationContext, object>>(StringComparer.Ordinal),
@@ -603,7 +608,8 @@ public sealed class OrleansReplicaKernelBuilder
             PersistentStateFactory.Empty,
             TransactionalStateFactory.Empty,
             new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal),
-            _timeProvider);
+            _timeProvider,
+            systemTargetDirectory: systemTargetDirectory);
         var peerEndpoints = gateways.ToDictionary(
             gatewayNodeName => gatewayNodeName,
             gatewayNodeName => _tcpNodeEndpoints[gatewayNodeName],
@@ -657,7 +663,8 @@ public sealed class OrleansReplicaKernelBuilder
         _grainImplementations.Values.ToDictionary(
             item => item.GrainType, item => new GrainTypePlacementHint(item.PreferLocalPlacement), StringComparer.Ordinal),
         _grainImplementations.Values.ToDictionary(
-            item => item.GrainType, item => new GrainTypeSchedulingPolicy(item.InterleavableMethods), StringComparer.Ordinal));
+            item => item.GrainType, item => new GrainTypeSchedulingPolicy(
+                item.InterleavableMethods, item.IsReentrant, item.MayInterleavePredicateMethodName), StringComparer.Ordinal));
 
     private GrainStorageResolver BuildStorageResolver()
         => new(
@@ -976,6 +983,8 @@ public sealed class OrleansReplicaKernelBuilder
                 grainPolicies.PlacementHints,
                 activationDirectories);
         var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
+        var systemTargetDirectory = new SystemTargetDirectory(nodeName, _timeProvider);
+        RegisterSystemTargets(systemTargetDirectory, nodeName, membershipViews[nodeName]);
         var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
             .FirstOrDefault(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal));
         var activationDirectory = activationCheckpoint is null
@@ -987,7 +996,8 @@ public sealed class OrleansReplicaKernelBuilder
                 persistentStateFactory,
                 transactionalStateFactory,
                 grainPolicies.SchedulingPolicies,
-                _timeProvider)
+                _timeProvider,
+                systemTargetDirectory: systemTargetDirectory)
             : LocalActivationDirectory.Restore(
                 nodeName,
                 grainPolicies.Factories,
@@ -997,7 +1007,8 @@ public sealed class OrleansReplicaKernelBuilder
                 transactionalStateFactory,
                 grainPolicies.SchedulingPolicies,
                 _timeProvider,
-                activationCheckpoint);
+                activationCheckpoint,
+                systemTargetDirectory);
         activationDirectories.Add(nodeName, activationDirectory);
 
         var peerEndpoints = _tcpNodeEndpoints
@@ -1125,6 +1136,8 @@ public sealed class OrleansReplicaKernelBuilder
                 _timeProvider);
             var locator = new DirectoryGrainLocator(grainDirectory, grainInterfaceVersions);
             var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
+            var systemTargetDirectory = new SystemTargetDirectory(currentNodeName, _timeProvider);
+            RegisterSystemTargets(systemTargetDirectory, currentNodeName, membershipViews[currentNodeName]);
             var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
                 .FirstOrDefault(item => string.Equals(item.NodeName, currentNodeName, StringComparison.Ordinal));
             var activationDirectory = activationCheckpoint is null
@@ -1132,12 +1145,13 @@ public sealed class OrleansReplicaKernelBuilder
                     currentNodeName,
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
                     callbackDirectory, persistentStateFactory, transactionalStateFactory,
-                    grainPolicies.SchedulingPolicies, _timeProvider)
+                    grainPolicies.SchedulingPolicies, _timeProvider,
+                    systemTargetDirectory: systemTargetDirectory)
                 : LocalActivationDirectory.Restore(
                     currentNodeName,
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
                     callbackDirectory, persistentStateFactory, transactionalStateFactory,
-                    grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint);
+                    grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint, systemTargetDirectory);
             var router = new LocalGrainRouter(currentNodeName, locator);
             var localIdentity = BuildLocalInvocationIdentity(currentNodeName, InvocationSourceKind.ClusterNode);
             var runtime = new InProcessRuntime(
@@ -1250,6 +1264,16 @@ public sealed class OrleansReplicaKernelBuilder
         return providers;
     }
 
+    private static void RegisterSystemTargets(
+        SystemTargetDirectory systemTargetDirectory,
+        string nodeName,
+        IClusterMembershipView membershipView)
+    {
+        systemTargetDirectory.Register(
+            ManagementSystemTarget.CreateId(nodeName),
+            new ManagementSystemTarget(membershipView));
+    }
+
     private Func<KernelHealthSnapshot> CreateHealthSnapshotProvider(
         string primaryNodeName,
         IClusterMembership membership,
@@ -1323,6 +1347,8 @@ public sealed class OrleansReplicaKernelBuilder
                         collectionAgeLimit,
                         attribute.PreferLocalPlacement,
                         attribute.InterleavableMethods,
+                        attribute.IsReentrant,
+                        attribute.MayInterleavePredicateMethodName,
                         isGenerated: true,
                         replaceExisting: false,
                         sourceDescription:
@@ -1423,6 +1449,8 @@ public sealed class OrleansReplicaKernelBuilder
         TimeSpan? collectionAgeLimit,
         bool preferLocalPlacement,
         IReadOnlyCollection<string>? interleavableMethods,
+        bool isReentrant,
+        string? mayInterleavePredicateMethodName,
         bool isGenerated,
         bool replaceExisting,
         string sourceDescription)
@@ -1433,7 +1461,8 @@ public sealed class OrleansReplicaKernelBuilder
             .ToArray() ?? [];
         var registration = new GrainImplementationRegistration(
             grainType, grainFactory, collectionAgeLimit, preferLocalPlacement,
-            normalizedMethods, isGenerated, sourceDescription);
+            normalizedMethods, isReentrant, mayInterleavePredicateMethodName,
+            isGenerated, sourceDescription);
         AddRegistration(
             _grainImplementations, grainType, registration, replaceExisting,
             "grain implementation", grainType);
@@ -1710,6 +1739,8 @@ public sealed class OrleansReplicaKernelBuilder
         TimeSpan? CollectionAgeLimit,
         bool PreferLocalPlacement,
         IReadOnlyList<string> InterleavableMethods,
+        bool IsReentrant,
+        string? MayInterleavePredicateMethodName,
         bool IsGenerated,
         string SourceDescription) : IRegistrationEntry;
 

@@ -21,6 +21,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     private readonly IReadOnlyDictionary<string, Func<GrainActivationContext, object>> _grainFactories;
     private readonly IReadOnlyDictionary<string, GrainTypeCollectionPolicy> _grainCollectionPolicies;
     private readonly IReadOnlyDictionary<string, GrainTypeSchedulingPolicy> _grainSchedulingPolicies;
+    private readonly SystemTargetDirectory _systemTargetDirectory;
     private readonly PersistentStateFactory _persistentStateFactory;
     private readonly TransactionalStateFactory _transactionalStateFactory;
     private readonly Dictionary<GrainId, ActivationEntry> _activations = new();
@@ -33,14 +34,16 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        SystemTargetDirectory? systemTargetDirectory = null)
         : this(
             "<local>",
             grainFactories,
             grainCollectionPolicies,
             callbackDirectory,
             grainSchedulingPolicies,
-            timeProvider)
+            timeProvider,
+            systemTargetDirectory)
     {
     }
 
@@ -50,7 +53,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        SystemTargetDirectory? systemTargetDirectory = null)
         : this(
             localNodeName,
             WrapFactories(grainFactories),
@@ -60,7 +64,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             TransactionalStateFactory.Empty,
             grainSchedulingPolicies,
             timeProvider,
-            checkpoint: null)
+            checkpoint: null,
+            systemTargetDirectory: systemTargetDirectory)
     {
     }
 
@@ -73,7 +78,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         TransactionalStateFactory transactionalStateFactory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
-        ActivationDirectoryCheckpoint? checkpoint = null)
+        ActivationDirectoryCheckpoint? checkpoint = null,
+        SystemTargetDirectory? systemTargetDirectory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(localNodeName);
 
@@ -85,6 +91,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         _transactionalStateFactory = transactionalStateFactory ?? throw new ArgumentNullException(nameof(transactionalStateFactory));
         _timeProvider = timeProvider ?? TimeProvider.System;
         _grainSchedulingPolicies = grainSchedulingPolicies ?? new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal);
+        _systemTargetDirectory = systemTargetDirectory ?? new SystemTargetDirectory(localNodeName, _timeProvider);
 
         if (checkpoint is null)
         {
@@ -108,6 +115,18 @@ public sealed class LocalActivationDirectory : IActivationDirectory
 
     public ActivationEntry GetOrCreate(GrainAddress address)
     {
+        if (SystemTargetId.IsSystemTarget(address.GrainId))
+        {
+            if (_systemTargetDirectory.TryGet(address.GrainId, out var systemTarget))
+            {
+                TraceLog.Write("directory", $"resolve system target {address.GrainId} on {address.NodeName}");
+                return systemTarget;
+            }
+
+            throw new InvalidOperationException(
+                $"No system target is registered for '{address.GrainId}' on node '{_localNodeName}'.");
+        }
+
         if (CallbackTargetIdentity.IsCallback(address.GrainId))
         {
             return _callbackDirectory.GetRequired(address.GrainId);
@@ -337,6 +356,12 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         GrainAddress address,
         ActivationDeactivationReason reason = ActivationDeactivationReason.Explicit)
     {
+        if (SystemTargetId.IsSystemTarget(address.GrainId))
+        {
+            TraceLog.Write("directory", $"skip deactivate for system target {address.GrainId} on {address.NodeName}");
+            return false;
+        }
+
         ActivationEntry? activation;
         lock (_lock)
         {
@@ -418,6 +443,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     public async ValueTask DisposeAsync()
     {
         await DeactivateAllAsync();
+        await _systemTargetDirectory.DisposeAsync();
     }
 
     public ActivationDirectoryCheckpoint ExportCheckpoint(string nodeName)
@@ -443,7 +469,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         LocalCallbackDirectory callbackDirectory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
-        ActivationDirectoryCheckpoint checkpoint)
+        ActivationDirectoryCheckpoint checkpoint,
+        SystemTargetDirectory? systemTargetDirectory = null)
         => Restore(
             "<local>",
             grainFactories,
@@ -451,7 +478,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             callbackDirectory,
             grainSchedulingPolicies,
             timeProvider,
-            checkpoint);
+            checkpoint,
+            systemTargetDirectory);
 
     public static LocalActivationDirectory Restore(
         string localNodeName,
@@ -460,7 +488,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         LocalCallbackDirectory callbackDirectory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
-        ActivationDirectoryCheckpoint checkpoint)
+        ActivationDirectoryCheckpoint checkpoint,
+        SystemTargetDirectory? systemTargetDirectory = null)
         => new(
             localNodeName,
             WrapFactories(grainFactories),
@@ -470,7 +499,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             TransactionalStateFactory.Empty,
             grainSchedulingPolicies,
             timeProvider,
-            checkpoint);
+            checkpoint,
+            systemTargetDirectory);
 
     internal static LocalActivationDirectory Restore(
         string localNodeName,
@@ -481,7 +511,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         TransactionalStateFactory transactionalStateFactory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
-        ActivationDirectoryCheckpoint checkpoint)
+        ActivationDirectoryCheckpoint checkpoint,
+        SystemTargetDirectory? systemTargetDirectory = null)
         => new(
             localNodeName,
             grainFactories,
@@ -491,7 +522,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             transactionalStateFactory,
             grainSchedulingPolicies,
             timeProvider,
-            checkpoint);
+            checkpoint,
+            systemTargetDirectory);
 
     private TimeSpan ResolveIdleWindow(string grainType, TimeSpan defaultIdleWindow)
     {
