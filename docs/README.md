@@ -1,6 +1,6 @@
 # 文档导航
 
-本目录包含 91 篇文档，分两个阶段：
+本目录包含 92 篇文档，分两个阶段：
 
 - **阶段一（01-37）**：Orleans 源码分析 — 逐模块拆解 Orleans 的设计，理解它为什么这么实现、哪些地方做得好、哪些地方有历史包袱
 - **阶段二（38-84）**：复刻设计文档 — 每个子系统在 OrleansReplicaKernel 里应该怎么设计，边界怎么切
@@ -90,6 +90,7 @@
 | 89 | [Membership Checkpoint 恢复后的连续性与非 Runtime Rehydrate 语义](89-membership-checkpoint-restore-continuity-without-runtime-rehydration.md) | host 级 membership-only checkpoint restore 开始直接验证 dissemination continuity 和非 runtime rehydrate 边界 |
 | 90 | [Runtime Checkpoint 恢复 Runtime Metadata，但不恢复 Activation 内存状态](90-runtime-checkpoint-restores-runtime-metadata-but-not-activation-memory.md) | host 级 runtime checkpoint restore 开始直接验证 runtime metadata continuity 和 fresh-instance activation 语义 |
 | 91 | [Runtime Checkpoint 保留 Owner Assignment，但不保留 Activation 内存状态](91-runtime-checkpoint-preserves-owner-assignment-but-not-activation-state.md) | host 级 runtime checkpoint restore 开始直接验证多节点 owner continuity 和 fresh-instance activation 边界 |
+| 92 | [Runtime Checkpoint 不恢复 Activation-Owned Timer](92-runtime-checkpoint-does-not-restore-activation-owned-timers.md) | host 级 runtime checkpoint restore 开始直接验证 activation-owned timer 不会被恢复或补触发 |
 
 ### 二、调度与并发
 
@@ -215,6 +216,7 @@
 | 89 | [Membership Checkpoint 恢复后的连续性与非 Runtime Rehydrate 语义](89-membership-checkpoint-restore-continuity-without-runtime-rehydration.md) | host/membership-checkpoint restore 开始验证 dissemination continuity 与不恢复 runtime state 的当前边界 |
 | 90 | [Runtime Checkpoint 恢复 Runtime Metadata，但不恢复 Activation 内存状态](90-runtime-checkpoint-restores-runtime-metadata-but-not-activation-memory.md) | host/runtime-checkpoint restore 开始验证 runtime metadata continuity 与 activation 仍按 fresh-instance 语义重建 |
 | 91 | [Runtime Checkpoint 保留 Owner Assignment，但不保留 Activation 内存状态](91-runtime-checkpoint-preserves-owner-assignment-but-not-activation-state.md) | host/runtime-checkpoint restore 开始验证 handoff 后的 owner continuity 与 activation 仍按 fresh-instance 语义重建 |
+| 92 | [Runtime Checkpoint 不恢复 Activation-Owned Timer](92-runtime-checkpoint-does-not-restore-activation-owned-timers.md) | host/runtime-checkpoint restore 开始验证 activation-owned timer 不会被恢复，也不会在 restore 后补触发 |
 
 ### 九、生命周期与回收
 
@@ -416,3 +418,4 @@
 | 89 | Membership Checkpoint 恢复后的连续性与非 Runtime Rehydrate 语义 | 设计 |
 | 90 | Runtime Checkpoint 恢复 Runtime Metadata，但不恢复 Activation 内存状态 | 设计 |
 | 91 | Runtime Checkpoint 保留 Owner Assignment，但不保留 Activation 内存状态 | 设计 |
+| 92 | Runtime Checkpoint 不恢复 Activation-Owned Timer | 设计 |

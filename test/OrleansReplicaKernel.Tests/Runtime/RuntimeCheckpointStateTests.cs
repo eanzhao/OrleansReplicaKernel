@@ -95,6 +95,45 @@ public sealed class RuntimeCheckpointStateTests
         }
     }
 
+    [Fact]
+    public async Task RuntimeCheckpoint_DoesNotRestoreActivationOwnedTimers()
+    {
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 04, 16, 0, 0, 0, TimeSpan.Zero));
+        OrleansReplicaKernelHost? host = CreateHost(timeProvider, checkpoint: null);
+
+        try
+        {
+            var grain = host.GetGrain<IEchoGrain>("runtime-checkpoint-timer");
+
+            await grain.ArmOneShotTimerAsync("checkpoint", 80);
+            var beforeCheckpoint = host.CaptureRuntimeCheckpoint();
+
+            Assert.Single(beforeCheckpoint.GrainDirectory.Records);
+            Assert.Single(beforeCheckpoint.ActivationDirectories);
+            Assert.Single(beforeCheckpoint.ActivationDirectories[0].Records);
+
+            await host.DisposeAsync();
+            host = null;
+
+            host = CreateHost(timeProvider, beforeCheckpoint);
+
+            timeProvider.Advance(TimeSpan.FromMilliseconds(200));
+
+            var timerSnapshot = await host.GetGrain<IEchoGrain>("runtime-checkpoint-timer").GetTimerSnapshotAsync();
+            var pingAfterRestore = await host.GetGrain<IEchoGrain>("runtime-checkpoint-timer").PingAsync("after-restore");
+
+            Assert.Equal("<none>", timerSnapshot);
+            Assert.Equal("echo:after-restore:count=1", pingAfterRestore);
+        }
+        finally
+        {
+            if (host is not null)
+            {
+                await host.DisposeAsync();
+            }
+        }
+    }
+
     private static OrleansReplicaKernelHost CreateHost(
         TimeProvider timeProvider,
         OrleansReplicaKernelRuntimeCheckpoint? checkpoint,
