@@ -5,10 +5,11 @@ using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Routing;
+using OrleansReplicaKernel.Streaming;
 
 namespace OrleansReplicaKernel.Runtime;
 
-public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver, IResponseReceiver, IAsyncDisposable, IReminderRuntimeContext
+public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver, IResponseReceiver, IAsyncDisposable, IReminderRuntimeContext, IStreamRuntimeContext
 {
     private const int MaxAttempts = 4;
 
@@ -24,6 +25,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
     private readonly TimeSpan _responseHistoryRetention;
     private readonly InvocationSourceKind _sourceKind;
     private LocalReminderService? _reminderService;
+    private IGrainStreamRuntime? _streamRuntime;
     private readonly Dictionary<Guid, CompletedRequestEntry> _completedRequests = new();
     private readonly Dictionary<Guid, Task<InvocationResponseMessage>> _inflightRequests = new();
     private readonly Dictionary<Guid, PendingResponseRegistration> _pendingResponses = new();
@@ -65,6 +67,11 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
     internal void BindReminderService(LocalReminderService reminderService)
     {
         _reminderService = reminderService ?? throw new ArgumentNullException(nameof(reminderService));
+    }
+
+    internal void BindStreamRuntime(IGrainStreamRuntime streamRuntime)
+    {
+        _streamRuntime = streamRuntime ?? throw new ArgumentNullException(nameof(streamRuntime));
     }
 
     public ResponseDispositionSnapshot GetResponseDispositionSnapshot()
@@ -328,6 +335,8 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
 
     IGrainReminderRegistry? IReminderRuntimeContext.GetReminderRegistry(GrainId grainId)
         => _reminderService?.BindToGrain(grainId);
+
+    IGrainStreamRuntime? IStreamRuntimeContext.GetStreamRuntime() => _streamRuntime;
 
     private InvocationMessage CreateRoutedMessage(
         Guid requestId,

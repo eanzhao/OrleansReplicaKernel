@@ -9,6 +9,7 @@ using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
 using OrleansReplicaKernel.Serialization;
 using OrleansReplicaKernel.Storage;
+using OrleansReplicaKernel.Streaming;
 
 namespace OrleansReplicaKernel.App;
 
@@ -25,6 +26,7 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly HashSet<Assembly> _generatedGrainImplementationAssemblies = [];
     private readonly HashSet<Assembly> _generatedGrainReferenceAssemblies = [];
     private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
+    private readonly Dictionary<string, MemoryStreamProviderConfiguration> _memoryStreamProviders = new(StringComparer.Ordinal);
     private IGrainDirectoryTable? _grainDirectoryTable;
     private IMembershipTable? _membershipTable;
     private IReminderTable? _reminderTable;
@@ -158,6 +160,32 @@ public sealed class OrleansReplicaKernelBuilder
     public OrleansReplicaKernelBuilder UseTcpTransport()
     {
         _useTcpTransport = true;
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseMemoryStreamProvider(
+        string providerName,
+        int maxBatchSize = 32,
+        TimeSpan? dispatchInterval = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+        if (maxBatchSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxBatchSize), "Stream batch size must be positive.");
+        }
+
+        var effectiveDispatchInterval = dispatchInterval ?? TimeSpan.FromMilliseconds(20);
+        if (effectiveDispatchInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(dispatchInterval),
+                "Stream dispatch interval must be positive.");
+        }
+
+        _memoryStreamProviders[providerName] = new MemoryStreamProviderConfiguration(
+            providerName,
+            maxBatchSize,
+            effectiveDispatchInterval);
         return this;
     }
 
@@ -346,6 +374,12 @@ public sealed class OrleansReplicaKernelBuilder
         var (membership, membershipViews, membershipGossiper) = BuildMembership(nodeName, allNodeNames);
         var failureDetector = new ConsecutiveFailureDetector(membership);
         var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
+        if (_useTcpTransport && _memoryStreamProviders.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "The current memory stream provider implementation only supports in-process hosts.");
+        }
+
         if (_useTcpTransport)
         {
             return BuildTcpHost(
@@ -369,6 +403,16 @@ public sealed class OrleansReplicaKernelBuilder
         var (locators, callbackDirectories, runtimes) =
             BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
                 grainDirectory, persistentStateFactory, objectReferenceFactoryRegistry, activationDirectories, messageSerializer);
+        var streamProviders = BuildMemoryStreamProviders(messageSerializer.Serializer, runtimes[nodeName]);
+        if (streamProviders.Count > 0)
+        {
+            var streamRuntime = new GrainStreamRuntime(messageSerializer.Serializer, streamProviders);
+            foreach (var runtime in runtimes.Values)
+            {
+                runtime.BindStreamRuntime(streamRuntime);
+            }
+        }
+
         var reminderServices = BuildReminderServices(allNodeNames, grainDirectory, runtimes);
 
         var bindings = BuildBindings();
@@ -392,7 +436,8 @@ public sealed class OrleansReplicaKernelBuilder
             callbackDirectories,
             objectReferenceFactoryRegistry,
             runtimes,
-            reminderServices.Values.Cast<IAsyncDisposable>()
+            streamProviders.Values.Cast<IAsyncDisposable>()
+                .Concat(reminderServices.Values)
                 .Concat(runtimes.Values)
                 .Concat(callbackDirectories.Values)
                 .ToArray(),
@@ -407,6 +452,12 @@ public sealed class OrleansReplicaKernelBuilder
         if (!_useTcpTransport)
         {
             throw new InvalidOperationException("Client mode requires TCP transport.");
+        }
+
+        if (_memoryStreamProviders.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "The current memory stream provider implementation does not support client mode.");
         }
 
         var gateways = gatewayNodeNames.Length == 0
@@ -942,6 +993,21 @@ public sealed class OrleansReplicaKernelBuilder
         }
 
         return reminderServices;
+    }
+
+    private Dictionary<string, MemoryStreamProvider> BuildMemoryStreamProviders(
+        BinarySerializer serializer,
+        InProcessRuntime runtime)
+    {
+        var providers = new Dictionary<string, MemoryStreamProvider>(StringComparer.Ordinal);
+        foreach (var configuration in _memoryStreamProviders.Values.OrderBy(item => item.ProviderName, StringComparer.Ordinal))
+        {
+            var provider = new MemoryStreamProvider(configuration, serializer, _timeProvider);
+            provider.Bind(runtime);
+            providers.Add(configuration.ProviderName, provider);
+        }
+
+        return providers;
     }
 
     private void RegisterGeneratedGrainImplementations()

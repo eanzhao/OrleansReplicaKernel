@@ -5,6 +5,7 @@ using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Scheduling;
+using OrleansReplicaKernel.Streaming;
 
 namespace OrleansReplicaKernel.Runtime;
 
@@ -106,6 +107,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                     message.RequestChainId,
                     this,
                     ResolveReminderRegistry(runtime),
+                    ResolveStreamRuntime(runtime),
                     _timeProvider,
                     async () =>
                     {
@@ -425,6 +427,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         requestChainId,
                         this,
                         ResolveReminderRegistry(runtime),
+                        ResolveStreamRuntime(runtime),
                         _timeProvider,
                         async () =>
                         {
@@ -463,6 +466,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         requestChainId,
                         this,
                         ResolveReminderRegistry(runtime),
+                        ResolveStreamRuntime(runtime),
                         _timeProvider,
                         async () =>
                         {
@@ -523,6 +527,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                 Guid.NewGuid(),
                 this,
                 ResolveReminderRegistry(runtime),
+                ResolveStreamRuntime(runtime),
                 _timeProvider,
                 async () =>
                 {
@@ -561,6 +566,11 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
     private IGrainReminderRegistry? ResolveReminderRegistry(IInvocationRuntime runtime)
         => runtime is IReminderRuntimeContext reminderRuntimeContext
             ? reminderRuntimeContext.GetReminderRegistry(GrainId)
+            : null;
+
+    private IGrainStreamRuntime? ResolveStreamRuntime(IInvocationRuntime runtime)
+        => runtime is IStreamRuntimeContext streamRuntimeContext
+            ? streamRuntimeContext.GetStreamRuntime()
             : null;
 
     private void Touch() => Interlocked.Exchange(ref _lastTouchedUtcTicks, _timeProvider.GetUtcNow().UtcTicks);

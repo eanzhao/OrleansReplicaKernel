@@ -11,6 +11,8 @@ public sealed class BinaryMessageSerializer
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
     }
 
+    internal BinarySerializer Serializer => _serializer;
+
     public InvocationMessage DeserializeInvocationMessage(ReadOnlyMemory<byte> payload)
         => _serializer.Deserialize<InvocationMessage>(payload);
 
