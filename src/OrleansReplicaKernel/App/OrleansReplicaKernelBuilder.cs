@@ -21,6 +21,7 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly HashSet<Assembly> _generatedGrainImplementationAssemblies = [];
     private readonly HashSet<Assembly> _generatedGrainReferenceAssemblies = [];
     private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
+    private IGrainDirectoryTable? _grainDirectoryTable;
     private IMembershipTable? _membershipTable;
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
     private int _membershipGossipFanout = 1;
@@ -228,6 +229,18 @@ public sealed class OrleansReplicaKernelBuilder
         return this;
     }
 
+    public OrleansReplicaKernelBuilder WithGrainDirectoryTable(IGrainDirectoryTable grainDirectoryTable)
+    {
+        _grainDirectoryTable = grainDirectoryTable ?? throw new ArgumentNullException(nameof(grainDirectoryTable));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseFileGrainDirectoryTable(string path)
+    {
+        _grainDirectoryTable = new FileGrainDirectoryTable(path);
+        return this;
+    }
+
     public OrleansReplicaKernelBuilder WithResponseHistoryRetention(TimeSpan retention)
     {
         if (retention < TimeSpan.Zero)
@@ -289,7 +302,7 @@ public sealed class OrleansReplicaKernelBuilder
         var nodeRegistry = new InProcessNodeRegistry();
         var activationDirectories = new Dictionary<string, IActivationDirectory>(StringComparer.Ordinal);
         var (grainDirectory, loadProvider, rebalancingPolicy) =
-            BuildDirectory(nodeName, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
+            BuildDirectory(nodeName, membership, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
         var probeService = new InProcessClusterProbeService(nodeName, membership, nodeRegistry, failureDetector);
         var (locators, callbackDirectories, runtimes) =
             BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
@@ -459,10 +472,11 @@ public sealed class OrleansReplicaKernelBuilder
             .GetResult();
     }
 
-    private (InMemoryGrainDirectory Directory,
+    private (IGrainDirectory Directory,
         ActivationDirectoryLoadProvider LoadProvider,
         LoadSkewRebalancingPolicy RebalancingPolicy) BuildDirectory(
         string nodeName,
+        IClusterMembership membership,
         IClusterMembershipView membershipView,
         IReadOnlyDictionary<string, GrainTypePlacementHint> placementHints,
         Dictionary<string, IActivationDirectory> activationDirectories)
@@ -472,12 +486,51 @@ public sealed class OrleansReplicaKernelBuilder
         var relocationPolicy = new HealthyNodeRelocationPolicy(nodeName);
         var rebalancingPolicy = new LoadSkewRebalancingPolicy(minimumSkew: 1);
         var checkpoint = _runtimeCheckpoint?.GrainDirectory ?? BuildSeededDirectoryCheckpoint();
+
+        if (_grainDirectoryTable is not null)
+        {
+            if (checkpoint is not null)
+            {
+                SeedGrainDirectoryTableIfEmpty(_grainDirectoryTable, checkpoint);
+            }
+
+            var authoritativeMembershipView = new AuthoritativeClusterMembershipView(nodeName, membership, _timeProvider);
+            return (
+                new PersistentGrainDirectory(
+                    _grainDirectoryTable,
+                    authoritativeMembershipView,
+                    placementPolicy,
+                    loadProvider,
+                    relocationPolicy,
+                    placementHints),
+                loadProvider,
+                rebalancingPolicy);
+        }
+
         var directory = checkpoint is null
             ? new InMemoryGrainDirectory(membershipView, placementPolicy, loadProvider, relocationPolicy, placementHints)
             : InMemoryGrainDirectory.Restore(membershipView, placementPolicy, loadProvider, relocationPolicy,
                 checkpoint, placementHints);
 
         return (directory, loadProvider, rebalancingPolicy);
+    }
+
+    private static void SeedGrainDirectoryTableIfEmpty(
+        IGrainDirectoryTable grainDirectoryTable,
+        GrainDirectoryCheckpoint checkpoint)
+    {
+        var snapshot = grainDirectoryTable.ReadAsync().GetAwaiter().GetResult();
+        if (!GrainDirectoryCheckpointHelper.IsEmpty(snapshot.Checkpoint))
+        {
+            return;
+        }
+
+        grainDirectoryTable.WriteAsync(
+                new GrainDirectoryTableWriteRequest(
+                    snapshot.Version,
+                    GrainDirectoryCheckpointHelper.Clone(checkpoint)))
+            .GetAwaiter()
+            .GetResult();
     }
 
     private ObjectReferenceFactoryRegistry BuildObjectReferenceFactoryRegistry() =>
@@ -543,7 +596,7 @@ public sealed class OrleansReplicaKernelBuilder
 
         var activationDirectories = new Dictionary<string, IActivationDirectory>(StringComparer.Ordinal);
         var (grainDirectory, loadProvider, rebalancingPolicy) =
-            BuildDirectory(nodeName, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
+            BuildDirectory(nodeName, membership, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
         var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
         var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
             .FirstOrDefault(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal));
@@ -566,11 +619,12 @@ public sealed class OrleansReplicaKernelBuilder
         var peerEndpoints = _tcpNodeEndpoints
             .Where(item => !string.Equals(item.Key, nodeName, StringComparison.Ordinal))
             .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+        var transportMembershipView = BuildTransportMembershipView(nodeName, membership, membershipViews[nodeName]);
         var transport = new TcpMessageTransport(
             nodeName,
             localEndpoint,
             peerEndpoints,
-            membershipViews[nodeName],
+            transportMembershipView,
             messageSerializer,
             _tcpHeartbeatInterval,
             _timeProvider);
@@ -679,6 +733,14 @@ public sealed class OrleansReplicaKernelBuilder
 
         return (locators, callbackDirectories, runtimes);
     }
+
+    private IClusterMembershipView BuildTransportMembershipView(
+        string nodeName,
+        IClusterMembership membership,
+        IClusterMembershipView membershipView)
+        => _membershipTable is null
+            ? membershipView
+            : new AuthoritativeClusterMembershipView(nodeName, membership, _timeProvider);
 
     private void RegisterGeneratedGrainImplementations()
     {

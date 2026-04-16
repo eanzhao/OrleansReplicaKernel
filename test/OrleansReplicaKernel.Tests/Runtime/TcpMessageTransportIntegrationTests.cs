@@ -96,18 +96,248 @@ public sealed class TcpMessageTransportIntegrationTests
         }
     }
 
-    private static Dictionary<string, int> CreateEndpointMap()
-        => new(StringComparer.Ordinal)
+    [Fact]
+    public async Task TcpTransport_SharedGrainDirectoryTable_AllowsCrossProcessOwnerLookupWithoutSeeding()
+    {
+        var endpointMap = CreateEndpointMap();
+        var sharedStateDirectory = CreateSharedStateDirectory();
+        var membershipFile = Path.Combine(sharedStateDirectory, "membership.json");
+        var grainDirectoryFile = Path.Combine(sharedStateDirectory, "grain-directory.json");
+
+        WorkerProcess? node2 = null;
+        WorkerProcess? node1 = null;
+        try
         {
-            ["dev-node-1"] = GetFreeTcpPort(),
-            ["dev-node-2"] = GetFreeTcpPort()
-        };
+            node2 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-2", endpointMap, membershipFile, grainDirectoryFile);
+            node1 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-1", endpointMap, membershipFile, grainDirectoryFile);
+
+            await WaitForMembershipAsync(node1, "dev-node-1", "dev-node-2");
+            await WaitForMembershipAsync(node2, "dev-node-1", "dev-node-2");
+
+            var first = await node1.PingAsync("shared-directory", "first-hop");
+            var node1Directory = await node1.GetDirectoryAsync();
+            var node2Directory = await node2.GetDirectoryAsync();
+            var second = await node2.PingAsync("shared-directory", "second-hop");
+
+            Assert.Equal("echo:first-hop:count=1", first);
+            Assert.Equal("echo/shared-directory->dev-node-1@v1", node1Directory);
+            Assert.Equal("echo/shared-directory->dev-node-1@v1", node2Directory);
+            Assert.Equal("echo:second-hop:count=2", second);
+        }
+        finally
+        {
+            if (node1 is not null)
+            {
+                await node1.DisposeAsync();
+            }
+
+            if (node2 is not null)
+            {
+                await node2.DisposeAsync();
+            }
+
+            DeleteSharedStateDirectory(sharedStateDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task TcpTransport_SharedGrainDirectoryTable_RelocatesOwnerAfterFailedNodeBecomesUnhealthy()
+    {
+        var endpointMap = CreateEndpointMap();
+        var sharedStateDirectory = CreateSharedStateDirectory();
+        var membershipFile = Path.Combine(sharedStateDirectory, "membership.json");
+        var grainDirectoryFile = Path.Combine(sharedStateDirectory, "grain-directory.json");
+
+        WorkerProcess? node2 = null;
+        WorkerProcess? node1 = null;
+        try
+        {
+            node2 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-2", endpointMap, membershipFile, grainDirectoryFile);
+            node1 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-1", endpointMap, membershipFile, grainDirectoryFile);
+
+            await WaitForMembershipAsync(node1, "dev-node-1", "dev-node-2");
+            await WaitForMembershipAsync(node2, "dev-node-1", "dev-node-2");
+
+            var seeded = await node2.PingAsync("directory-failover", "seed-on-node2");
+            var routed = await node1.PingAsync("directory-failover", "route-to-node2");
+
+            Assert.Equal("echo:seed-on-node2:count=1", seeded);
+            Assert.Equal("echo:route-to-node2:count=2", routed);
+
+            await node2.DisposeAsync();
+            node2 = null;
+
+            Assert.Equal(1, await node1.RunProbeAsync());
+            await WaitForHealthAsync(node1, "dev-node-2", nameof(NodeHealthStatus.Suspect));
+
+            Assert.Equal(1, await node1.RunProbeAsync());
+            await WaitForHealthAsync(node1, "dev-node-2", nameof(NodeHealthStatus.Unhealthy));
+
+            var afterFailover = await node1.PingAsync("directory-failover", "after-failover");
+
+            Assert.Equal("echo:after-failover:count=1", afterFailover);
+        }
+        finally
+        {
+            if (node1 is not null)
+            {
+                await node1.DisposeAsync();
+            }
+
+            if (node2 is not null)
+            {
+                await node2.DisposeAsync();
+            }
+
+            DeleteSharedStateDirectory(sharedStateDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task TcpTransport_SharedGrainDirectoryTable_RoutesAcrossThreeNodeCluster()
+    {
+        var endpointMap = CreateEndpointMap("dev-node-1", "dev-node-2", "dev-node-3");
+        var sharedStateDirectory = CreateSharedStateDirectory();
+        var membershipFile = Path.Combine(sharedStateDirectory, "membership.json");
+        var grainDirectoryFile = Path.Combine(sharedStateDirectory, "grain-directory.json");
+
+        WorkerProcess? node3 = null;
+        WorkerProcess? node2 = null;
+        WorkerProcess? node1 = null;
+        try
+        {
+            node3 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-3", endpointMap, membershipFile, grainDirectoryFile);
+            node2 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-2", endpointMap, membershipFile, grainDirectoryFile);
+            node1 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-1", endpointMap, membershipFile, grainDirectoryFile);
+
+            await WaitForMembershipAsync(node1, "dev-node-1", "dev-node-2", "dev-node-3");
+            await WaitForMembershipAsync(node2, "dev-node-1", "dev-node-2", "dev-node-3");
+            await WaitForMembershipAsync(node3, "dev-node-1", "dev-node-2", "dev-node-3");
+
+            var seeded = await node3.PingAsync("three-node-directory", "seed-on-node3");
+            var viaNode1 = await node1.PingAsync("three-node-directory", "route-from-node1");
+            var viaNode2 = await node2.PingAsync("three-node-directory", "route-from-node2");
+
+            Assert.Equal("echo:seed-on-node3:count=1", seeded);
+            Assert.Equal("echo:route-from-node1:count=2", viaNode1);
+            Assert.Equal("echo:route-from-node2:count=3", viaNode2);
+            Assert.Equal("echo/three-node-directory->dev-node-3@v1", await node1.GetDirectoryAsync());
+            Assert.Equal("echo/three-node-directory->dev-node-3@v1", await node2.GetDirectoryAsync());
+            Assert.Equal("echo/three-node-directory->dev-node-3@v1", await node3.GetDirectoryAsync());
+        }
+        finally
+        {
+            if (node1 is not null)
+            {
+                await node1.DisposeAsync();
+            }
+
+            if (node2 is not null)
+            {
+                await node2.DisposeAsync();
+            }
+
+            if (node3 is not null)
+            {
+                await node3.DisposeAsync();
+            }
+
+            DeleteSharedStateDirectory(sharedStateDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task TcpTransport_SharedGrainDirectoryTable_ReactivatesOnHealthyNodeAfterOwnerFailureInThreeNodeCluster()
+    {
+        var endpointMap = CreateEndpointMap("dev-node-1", "dev-node-2", "dev-node-3");
+        var sharedStateDirectory = CreateSharedStateDirectory();
+        var membershipFile = Path.Combine(sharedStateDirectory, "membership.json");
+        var grainDirectoryFile = Path.Combine(sharedStateDirectory, "grain-directory.json");
+
+        WorkerProcess? node3 = null;
+        WorkerProcess? node2 = null;
+        WorkerProcess? node1 = null;
+        try
+        {
+            node3 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-3", endpointMap, membershipFile, grainDirectoryFile);
+            node2 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-2", endpointMap, membershipFile, grainDirectoryFile);
+            node1 = await WorkerProcess.StartWithSharedTablesAsync("dev-node-1", endpointMap, membershipFile, grainDirectoryFile);
+
+            await WaitForMembershipAsync(node1, "dev-node-1", "dev-node-2", "dev-node-3");
+            await WaitForMembershipAsync(node2, "dev-node-1", "dev-node-2", "dev-node-3");
+            await WaitForMembershipAsync(node3, "dev-node-1", "dev-node-2", "dev-node-3");
+
+            var seeded = await node3.PingAsync("three-node-failover", "seed-on-node3");
+            var routed = await node1.PingAsync("three-node-failover", "route-to-node3");
+
+            Assert.Equal("echo:seed-on-node3:count=1", seeded);
+            Assert.Equal("echo:route-to-node3:count=2", routed);
+
+            await node3.DisposeAsync();
+            node3 = null;
+
+            Assert.Equal(2, await node1.RunProbeAsync());
+            await WaitForHealthAsync(node1, "dev-node-3", nameof(NodeHealthStatus.Suspect));
+
+            Assert.Equal(2, await node1.RunProbeAsync());
+            await WaitForHealthAsync(node1, "dev-node-3", nameof(NodeHealthStatus.Unhealthy));
+
+            var afterFailover = await node1.PingAsync("three-node-failover", "after-failover");
+            var directoryAfterFailover = await node1.GetDirectoryAsync();
+
+            Assert.Equal("echo:after-failover:count=1", afterFailover);
+            Assert.DoesNotContain("echo/three-node-failover->dev-node-3", directoryAfterFailover, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (node1 is not null)
+            {
+                await node1.DisposeAsync();
+            }
+
+            if (node2 is not null)
+            {
+                await node2.DisposeAsync();
+            }
+
+            if (node3 is not null)
+            {
+                await node3.DisposeAsync();
+            }
+
+            DeleteSharedStateDirectory(sharedStateDirectory);
+        }
+    }
+
+    private static Dictionary<string, int> CreateEndpointMap(params string[] nodeNames)
+    {
+        var names = nodeNames.Length == 0
+            ? ["dev-node-1", "dev-node-2"]
+            : nodeNames;
+
+        return names.ToDictionary(nodeName => nodeName, _ => GetFreeTcpPort(), StringComparer.Ordinal);
+    }
 
     private static int GetFreeTcpPort()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         return ((IPEndPoint)listener.LocalEndpoint).Port;
+    }
+
+    private static string CreateSharedStateDirectory()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "orleans-replica-kernel-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    private static void DeleteSharedStateDirectory(string directory)
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     private static async Task WaitForMembershipAsync(WorkerProcess worker, params string[] expectedNodeNames)
@@ -169,19 +399,28 @@ public sealed class TcpMessageTransportIntegrationTests
             string nodeName,
             IReadOnlyDictionary<string, int> endpoints,
             params string[] seededOwners)
-            => StartCoreAsync(nodeName, endpoints, null, seededOwners);
+            => StartCoreAsync(nodeName, endpoints, null, null, seededOwners);
 
         public static Task<WorkerProcess> StartWithMembershipAsync(
             string nodeName,
             IReadOnlyDictionary<string, int> endpoints,
             string membershipFile,
             params string[] seededOwners)
-            => StartCoreAsync(nodeName, endpoints, membershipFile, seededOwners);
+            => StartCoreAsync(nodeName, endpoints, membershipFile, null, seededOwners);
+
+        public static Task<WorkerProcess> StartWithSharedTablesAsync(
+            string nodeName,
+            IReadOnlyDictionary<string, int> endpoints,
+            string membershipFile,
+            string grainDirectoryFile,
+            params string[] seededOwners)
+            => StartCoreAsync(nodeName, endpoints, membershipFile, grainDirectoryFile, seededOwners);
 
         private static async Task<WorkerProcess> StartCoreAsync(
             string nodeName,
             IReadOnlyDictionary<string, int> endpoints,
             string? membershipFile,
+            string? grainDirectoryFile,
             string[] seededOwners)
         {
             var workerAssemblyPath = typeof(NetworkWorkerAnchor).Assembly.Location;
@@ -204,6 +443,12 @@ public sealed class TcpMessageTransportIntegrationTests
             {
                 startInfo.ArgumentList.Add("--membership-file");
                 startInfo.ArgumentList.Add(membershipFile);
+            }
+
+            if (!string.IsNullOrWhiteSpace(grainDirectoryFile))
+            {
+                startInfo.ArgumentList.Add("--directory-file");
+                startInfo.ArgumentList.Add(grainDirectoryFile);
             }
 
             foreach (var endpoint in endpoints)
@@ -265,6 +510,26 @@ public sealed class TcpMessageTransportIntegrationTests
                             JsonOptions)
                         ?? throw new InvalidOperationException("Worker returned invalid membership payload."),
                     "error" => throw new InvalidOperationException($"Worker membership query failed: {response.Error}\n{_output}"),
+                    _ => throw new InvalidOperationException($"Unexpected worker response '{response.Type}'.\n{_output}")
+                };
+            }
+            finally
+            {
+                _commandLock.Release();
+            }
+        }
+
+        public async Task<string> GetDirectoryAsync()
+        {
+            await _commandLock.WaitAsync();
+            try
+            {
+                await WriteCommandAsync(new WorkerCommand("directory", null, null));
+                var response = await ReadControlResponseAsync();
+                return response.Type switch
+                {
+                    "directory" => response.Result ?? throw new InvalidOperationException("Worker returned an empty directory payload."),
+                    "error" => throw new InvalidOperationException($"Worker directory query failed: {response.Error}\n{_output}"),
                     _ => throw new InvalidOperationException($"Unexpected worker response '{response.Type}'.\n{_output}")
                 };
             }

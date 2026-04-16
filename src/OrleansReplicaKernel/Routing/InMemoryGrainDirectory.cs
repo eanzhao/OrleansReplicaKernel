@@ -13,6 +13,7 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
     private readonly IOwnerRelocationPolicy _relocationPolicy;
     private readonly IReadOnlyDictionary<string, GrainTypePlacementHint> _placementHints;
     private readonly Dictionary<GrainId, GrainOwnerRecord> _records = new();
+    private long _invalidationVersion;
 
     public InMemoryGrainDirectory(
         IClusterMembershipView membershipView,
@@ -47,6 +48,18 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
         {
             _records[record.GrainId] = record;
         }
+
+        _invalidationVersion = checkpoint.Records.Count == 0
+            ? 0
+            : checkpoint.Records.Max(item => item.Version);
+    }
+
+    public long GetInvalidationVersion()
+    {
+        lock (_lock)
+        {
+            return _invalidationVersion;
+        }
     }
 
     public GrainOwnerRecord Resolve(GrainId grainId)
@@ -68,6 +81,7 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
                     };
 
                     _records[grainId] = relocated;
+                    _invalidationVersion++;
 
                     TraceLog.Write(
                         "grain-directory",
@@ -88,6 +102,7 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
                 ResolvePlacementHint(grainId.GrainType));
             var created = new GrainOwnerRecord(grainId, initialOwnerNodeName, Version: 1);
             _records.Add(grainId, created);
+            _invalidationVersion++;
 
             TraceLog.Write(
                 "grain-directory",
@@ -116,6 +131,7 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
             };
 
             _records[grainId] = updated;
+            _invalidationVersion++;
 
             TraceLog.Write(
                 "grain-directory",

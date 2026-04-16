@@ -19,6 +19,11 @@ if (!string.IsNullOrWhiteSpace(options.MembershipFile))
     builder.UseFileMembershipTable(options.MembershipFile);
 }
 
+if (!string.IsNullOrWhiteSpace(options.DirectoryFile))
+{
+    builder.UseFileGrainDirectoryTable(options.DirectoryFile);
+}
+
 foreach (var endpoint in options.Endpoints)
 {
     builder.WithTcpNodeEndpoint(endpoint.Key, new IPEndPoint(IPAddress.Loopback, endpoint.Value));
@@ -71,6 +76,9 @@ while (await Console.In.ReadLineAsync() is { } line)
                     .ToArray();
                 WriteControl(new WorkerResponse("membership", JsonSerializer.Serialize(membership, serializerOptions), null));
                 break;
+            case "directory":
+                WriteControl(new WorkerResponse("directory", host.DescribeGrainDirectory(), null));
+                break;
             case "probe":
                 var probeCount = await host.RunProbeTickAsync();
                 WriteControl(new WorkerResponse("probe", probeCount.ToString(), null));
@@ -118,6 +126,8 @@ internal sealed class WorkerOptions
 
     public string? MembershipFile { get; init; }
 
+    public string? DirectoryFile { get; init; }
+
     public static WorkerOptions Parse(string[] args)
     {
         var nodeName = string.Empty;
@@ -125,6 +135,7 @@ internal sealed class WorkerOptions
         var seededOwners = new List<SeededOwner>();
         var heartbeatMilliseconds = 50;
         string? membershipFile = null;
+        string? directoryFile = null;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -144,6 +155,9 @@ internal sealed class WorkerOptions
                     break;
                 case "--membership-file":
                     membershipFile = args[++index];
+                    break;
+                case "--directory-file":
+                    directoryFile = args[++index];
                     break;
                 default:
                     throw new InvalidOperationException($"Unknown worker argument '{args[index]}'.");
@@ -166,7 +180,8 @@ internal sealed class WorkerOptions
             Endpoints = endpoints,
             SeededOwners = seededOwners,
             HeartbeatMilliseconds = heartbeatMilliseconds,
-            MembershipFile = membershipFile
+            MembershipFile = membershipFile,
+            DirectoryFile = directoryFile
         };
     }
 
