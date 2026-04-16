@@ -4,174 +4,171 @@ namespace OrleansReplicaKernel.Runtime;
 
 public sealed class InProcessClusterMembership : IClusterMembership
 {
-    private readonly object _lock = new();
+    private readonly IMembershipTable _membershipTable;
     private readonly TimeProvider _timeProvider;
-    private readonly Dictionary<string, ClusterMemberRecord> _members = new(StringComparer.Ordinal);
-    private readonly List<MembershipViewChange> _viewChanges = [];
-    private long _currentEpoch;
 
     public InProcessClusterMembership(TimeProvider? timeProvider = null)
+        : this(new InMemoryMembershipTable(), timeProvider)
     {
+    }
+
+    public InProcessClusterMembership(IMembershipTable membershipTable, TimeProvider? timeProvider = null)
+    {
+        _membershipTable = membershipTable ?? throw new ArgumentNullException(nameof(membershipTable));
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
-    private InProcessClusterMembership(ClusterMembershipCheckpoint checkpoint, TimeProvider? timeProvider)
-    {
-        _timeProvider = timeProvider ?? TimeProvider.System;
-        _currentEpoch = checkpoint.CurrentEpoch;
-        foreach (var member in checkpoint.Members)
-        {
-            _members.Add(member.NodeName, member);
-        }
-
-        _viewChanges.AddRange(checkpoint.ViewChanges.OrderBy(item => item.Epoch));
-    }
-
-    public long CurrentEpoch
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _currentEpoch;
-            }
-        }
-    }
+    public long CurrentEpoch => ReadCheckpoint().CurrentEpoch;
 
     public void Register(string nodeName)
     {
         var utcNow = _timeProvider.GetUtcNow();
-        MembershipViewChange viewChange;
-        lock (_lock)
+        while (true)
         {
-            _members.Add(nodeName, new ClusterMemberRecord(nodeName, NodeHealthStatus.Healthy));
-            _currentEpoch++;
-            viewChange = new MembershipViewChange(
-                _currentEpoch,
+            var snapshot = ReadTableSnapshot();
+            if (snapshot.Checkpoint.Members.Any(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException($"Node '{nodeName}' is already part of membership.");
+            }
+
+            var updatedEpoch = snapshot.Checkpoint.CurrentEpoch + 1;
+            var viewChange = new MembershipViewChange(
+                updatedEpoch,
                 nodeName,
                 PreviousStatus: null,
                 CurrentStatus: NodeHealthStatus.Healthy,
                 Reason: "register",
                 CreatedAtUtc: utcNow);
-            _viewChanges.Add(viewChange);
-        }
 
-        TraceLog.Write(
-            "membership",
-            $"view change epoch={viewChange.Epoch} node={nodeName} <none> -> {NodeHealthStatus.Healthy} reason={viewChange.Reason}");
+            var updatedCheckpoint = new ClusterMembershipCheckpoint(
+                updatedEpoch,
+                snapshot.Checkpoint.Members
+                    .Append(new ClusterMemberRecord(nodeName, NodeHealthStatus.Healthy))
+                    .OrderBy(item => item.NodeName, StringComparer.Ordinal)
+                    .ToArray(),
+                snapshot.Checkpoint.ViewChanges
+                    .Append(viewChange)
+                    .OrderBy(item => item.Epoch)
+                    .ToArray());
+
+            if (!_membershipTable.RegisterAsync(
+                    new MembershipTableWriteRequest(snapshot.Version, updatedCheckpoint))
+                .GetAwaiter()
+                .GetResult())
+            {
+                continue;
+            }
+
+            TraceLog.Write(
+                "membership",
+                $"view change epoch={viewChange.Epoch} node={nodeName} <none> -> {NodeHealthStatus.Healthy} reason={viewChange.Reason}");
+            return;
+        }
     }
 
     public bool IsMember(string nodeName)
-    {
-        lock (_lock)
-        {
-            return _members.ContainsKey(nodeName);
-        }
-    }
+        => ReadCheckpoint().Members.Any(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal));
 
     public bool IsHealthy(string nodeName)
         => GetHealth(nodeName) == NodeHealthStatus.Healthy;
 
     public NodeHealthStatus GetHealth(string nodeName)
     {
-        lock (_lock)
-        {
-            return _members.TryGetValue(nodeName, out var record)
-                ? record.HealthStatus
-                : NodeHealthStatus.Unhealthy;
-        }
+        var record = ReadCheckpoint().Members
+            .FirstOrDefault(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal));
+        return string.IsNullOrWhiteSpace(record.NodeName)
+            ? NodeHealthStatus.Unhealthy
+            : record.HealthStatus;
     }
 
     public void SetHealth(string nodeName, NodeHealthStatus status, string reason)
     {
         var utcNow = _timeProvider.GetUtcNow();
-        MembershipViewChange? viewChange = null;
-        lock (_lock)
+        while (true)
         {
-            if (_members.TryGetValue(nodeName, out var record))
-            {
-                if (record.HealthStatus == status)
-                {
-                    return;
-                }
-
-                var updated = record with { HealthStatus = status };
-                _members[nodeName] = updated;
-                _currentEpoch++;
-                viewChange = new MembershipViewChange(
-                    _currentEpoch,
-                    nodeName,
-                    record.HealthStatus,
-                    status,
-                    reason,
-                    utcNow);
-                _viewChanges.Add(viewChange);
-            }
-            else
+            var snapshot = ReadTableSnapshot();
+            var record = snapshot.Checkpoint.Members
+                .FirstOrDefault(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal));
+            if (string.IsNullOrWhiteSpace(record.NodeName))
             {
                 throw new InvalidOperationException($"Node '{nodeName}' is not part of membership.");
             }
-        }
 
-        TraceLog.Write(
-            "membership",
-            $"view change epoch={viewChange!.Epoch} node={nodeName} {viewChange.PreviousStatus} -> {viewChange.CurrentStatus} reason={viewChange.Reason}");
+            if (record.HealthStatus == status)
+            {
+                return;
+            }
+
+            var updatedEpoch = snapshot.Checkpoint.CurrentEpoch + 1;
+            var viewChange = new MembershipViewChange(
+                updatedEpoch,
+                nodeName,
+                record.HealthStatus,
+                status,
+                reason,
+                utcNow);
+
+            var updatedCheckpoint = new ClusterMembershipCheckpoint(
+                updatedEpoch,
+                snapshot.Checkpoint.Members
+                    .Select(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal)
+                        ? item with { HealthStatus = status }
+                        : item)
+                    .OrderBy(item => item.NodeName, StringComparer.Ordinal)
+                    .ToArray(),
+                snapshot.Checkpoint.ViewChanges
+                    .Append(viewChange)
+                    .OrderBy(item => item.Epoch)
+                    .ToArray());
+
+            if (!_membershipTable.UpdateAsync(
+                    new MembershipTableWriteRequest(snapshot.Version, updatedCheckpoint))
+                .GetAwaiter()
+                .GetResult())
+            {
+                continue;
+            }
+
+            TraceLog.Write(
+                "membership",
+                $"view change epoch={viewChange.Epoch} node={nodeName} {viewChange.PreviousStatus} -> {viewChange.CurrentStatus} reason={viewChange.Reason}");
+            return;
+        }
     }
 
     public IReadOnlyList<ClusterMemberRecord> GetMembers()
-    {
-        lock (_lock)
-        {
-            return _members.Values.OrderBy(item => item.NodeName, StringComparer.Ordinal).ToArray();
-        }
-    }
+        => ReadCheckpoint().Members
+            .OrderBy(item => item.NodeName, StringComparer.Ordinal)
+            .ToArray();
 
     public IReadOnlyList<string> GetHealthyMembers()
-    {
-        lock (_lock)
-        {
-            return _members
-                .Where(pair => pair.Value.HealthStatus == NodeHealthStatus.Healthy)
-                .Select(pair => pair.Value.NodeName)
-                .ToArray();
-        }
-    }
+        => ReadCheckpoint().Members
+            .Where(item => item.HealthStatus == NodeHealthStatus.Healthy)
+            .Select(item => item.NodeName)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
 
     public IReadOnlyList<MembershipViewChange> GetViewChanges()
-    {
-        lock (_lock)
-        {
-            return _viewChanges.ToArray();
-        }
-    }
+        => ReadCheckpoint().ViewChanges
+            .OrderBy(item => item.Epoch)
+            .ToArray();
 
     public IReadOnlyList<MembershipViewChange> GetViewChangesSince(long epochExclusive)
-    {
-        lock (_lock)
-        {
-            return _viewChanges
-                .Where(item => item.Epoch > epochExclusive)
-                .ToArray();
-        }
-    }
+        => ReadCheckpoint().ViewChanges
+            .Where(item => item.Epoch > epochExclusive)
+            .OrderBy(item => item.Epoch)
+            .ToArray();
 
     public ClusterMembershipCheckpoint ExportCheckpoint()
-    {
-        lock (_lock)
-        {
-            return new ClusterMembershipCheckpoint(
-                _currentEpoch,
-                _members.Values
-                    .OrderBy(item => item.NodeName, StringComparer.Ordinal)
-                    .ToArray(),
-                _viewChanges
-                    .OrderBy(item => item.Epoch)
-                    .ToArray());
-        }
-    }
+        => MembershipTableCheckpointHelper.Clone(ReadCheckpoint());
 
     public static InProcessClusterMembership Restore(
         ClusterMembershipCheckpoint checkpoint,
         TimeProvider? timeProvider = null)
-        => new(checkpoint, timeProvider);
+        => new(new InMemoryMembershipTable(checkpoint), timeProvider);
+
+    private ClusterMembershipCheckpoint ReadCheckpoint() => ReadTableSnapshot().Checkpoint;
+
+    private MembershipTableSnapshot ReadTableSnapshot()
+        => _membershipTable.ReadAsync().GetAwaiter().GetResult();
 }

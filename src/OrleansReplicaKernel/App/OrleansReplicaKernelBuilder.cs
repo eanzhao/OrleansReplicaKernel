@@ -21,6 +21,7 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly HashSet<Assembly> _generatedGrainImplementationAssemblies = [];
     private readonly HashSet<Assembly> _generatedGrainReferenceAssemblies = [];
     private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
+    private IMembershipTable? _membershipTable;
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
     private int _membershipGossipFanout = 1;
     private int _membershipAntiEntropyInterval = 4;
@@ -215,6 +216,18 @@ public sealed class OrleansReplicaKernelBuilder
         return this;
     }
 
+    public OrleansReplicaKernelBuilder WithMembershipTable(IMembershipTable membershipTable)
+    {
+        _membershipTable = membershipTable ?? throw new ArgumentNullException(nameof(membershipTable));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseFileMembershipTable(string path)
+    {
+        _membershipTable = new FileMembershipTable(path);
+        return this;
+    }
+
     public OrleansReplicaKernelBuilder WithResponseHistoryRetention(TimeSpan retention)
     {
         if (retention < TimeSpan.Zero)
@@ -256,7 +269,7 @@ public sealed class OrleansReplicaKernelBuilder
         var grainPolicies = BuildGrainPolicies();
         var messageSerializer = BuildMessageSerializer();
         var allNodeNames = ResolveNodeNames(nodeName, peerNodeNames);
-        var (membership, membershipViews, membershipGossiper) = BuildMembership(allNodeNames);
+        var (membership, membershipViews, membershipGossiper) = BuildMembership(nodeName, allNodeNames);
         var failureDetector = new ConsecutiveFailureDetector(membership);
         var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
         if (_useTcpTransport)
@@ -348,14 +361,45 @@ public sealed class OrleansReplicaKernelBuilder
         return checkpointNodeNames;
     }
 
-    private (InProcessClusterMembership Membership,
+    private (IClusterMembership Membership,
         Dictionary<string, GossipedClusterMembershipView> Views,
-        InProcessMembershipGossiper Gossiper) BuildMembership(string[] allNodeNames)
+        InProcessMembershipGossiper Gossiper) BuildMembership(string nodeName, string[] allNodeNames)
     {
-        InProcessClusterMembership membership;
+        IClusterMembership membership;
         Dictionary<string, GossipedClusterMembershipView> views;
 
-        if (_membershipCheckpoint is null)
+        if (_membershipTable is not null)
+        {
+            if (_membershipCheckpoint is not null)
+            {
+                SeedMembershipTableIfEmpty(_membershipTable, _membershipCheckpoint.ClusterMembership);
+            }
+
+            membership = new InProcessClusterMembership(_membershipTable, _timeProvider);
+            if (!membership.IsMember(nodeName))
+            {
+                membership.Register(nodeName);
+            }
+
+            views = _membershipCheckpoint is null
+                ? allNodeNames.ToDictionary(
+                    name => name,
+                    name => new GossipedClusterMembershipView(name, _membershipStabilizationWindow, _timeProvider),
+                    StringComparer.Ordinal)
+                : allNodeNames.ToDictionary(
+                    name => name,
+                    name =>
+                    {
+                        var viewCheckpoint = _membershipCheckpoint.Views.FirstOrDefault(item =>
+                            string.Equals(item.ObserverNodeName, name, StringComparison.Ordinal))
+                            ?? throw new InvalidOperationException(
+                                $"Membership checkpoint does not contain observer view '{name}'.");
+                        return GossipedClusterMembershipView.Restore(
+                            viewCheckpoint, _membershipStabilizationWindow, _timeProvider);
+                    },
+                    StringComparer.Ordinal);
+        }
+        else if (_membershipCheckpoint is null)
         {
             membership = new InProcessClusterMembership(_timeProvider);
             foreach (var currentNodeName in allNodeNames)
@@ -395,6 +439,24 @@ public sealed class OrleansReplicaKernelBuilder
         }
 
         return (membership, views, gossiper);
+    }
+
+    private static void SeedMembershipTableIfEmpty(
+        IMembershipTable membershipTable,
+        ClusterMembershipCheckpoint checkpoint)
+    {
+        var snapshot = membershipTable.ReadAsync().GetAwaiter().GetResult();
+        if (!MembershipTableCheckpointHelper.IsEmpty(snapshot.Checkpoint))
+        {
+            return;
+        }
+
+        membershipTable.UpdateAsync(
+                new MembershipTableWriteRequest(
+                    snapshot.Version,
+                    MembershipTableCheckpointHelper.Clone(checkpoint)))
+            .GetAwaiter()
+            .GetResult();
     }
 
     private (InMemoryGrainDirectory Directory,
@@ -459,7 +521,7 @@ public sealed class OrleansReplicaKernelBuilder
         string nodeName,
         string[] allNodeNames,
         GrainPolicySet grainPolicies,
-        InProcessClusterMembership membership,
+        IClusterMembership membership,
         Dictionary<string, GossipedClusterMembershipView> membershipViews,
         InProcessMembershipGossiper membershipGossiper,
         IFailureDetector failureDetector,

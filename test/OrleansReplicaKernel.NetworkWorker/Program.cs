@@ -14,6 +14,11 @@ var builder = new OrleansReplicaKernelBuilder()
     .UseTcpTransport()
     .WithTcpHeartbeatInterval(TimeSpan.FromMilliseconds(options.HeartbeatMilliseconds));
 
+if (!string.IsNullOrWhiteSpace(options.MembershipFile))
+{
+    builder.UseFileMembershipTable(options.MembershipFile);
+}
+
 foreach (var endpoint in options.Endpoints)
 {
     builder.WithTcpNodeEndpoint(endpoint.Key, new IPEndPoint(IPAddress.Loopback, endpoint.Value));
@@ -60,6 +65,16 @@ while (await Console.In.ReadLineAsync() is { } line)
                 var result = await grain.PingAsync(command.Text ?? throw new InvalidOperationException("ping command requires text."));
                 WriteControl(new WorkerResponse("result", result, null));
                 break;
+            case "membership":
+                var membership = host.CaptureMembershipCheckpoint().ClusterMembership.Members
+                    .Select(item => new WorkerMembershipRecord(item.NodeName, item.HealthStatus.ToString()))
+                    .ToArray();
+                WriteControl(new WorkerResponse("membership", JsonSerializer.Serialize(membership, serializerOptions), null));
+                break;
+            case "probe":
+                var probeCount = await host.RunProbeTickAsync();
+                WriteControl(new WorkerResponse("probe", probeCount.ToString(), null));
+                break;
             case "shutdown":
                 WriteControl(new WorkerResponse("shutdown", null, null));
                 return;
@@ -87,6 +102,8 @@ internal sealed record WorkerCommand(string Type, string? Key, string? Text);
 
 internal sealed record WorkerResponse(string Type, string? Result, string? Error);
 
+internal sealed record WorkerMembershipRecord(string NodeName, string HealthStatus);
+
 internal sealed record SeededOwner(string GrainType, string Key, string OwnerNodeName, long Version);
 
 internal sealed class WorkerOptions
@@ -99,12 +116,15 @@ internal sealed class WorkerOptions
 
     public required int HeartbeatMilliseconds { get; init; }
 
+    public string? MembershipFile { get; init; }
+
     public static WorkerOptions Parse(string[] args)
     {
         var nodeName = string.Empty;
         var endpoints = new Dictionary<string, int>(StringComparer.Ordinal);
         var seededOwners = new List<SeededOwner>();
         var heartbeatMilliseconds = 50;
+        string? membershipFile = null;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -121,6 +141,9 @@ internal sealed class WorkerOptions
                     break;
                 case "--heartbeat-ms":
                     heartbeatMilliseconds = int.Parse(args[++index]);
+                    break;
+                case "--membership-file":
+                    membershipFile = args[++index];
                     break;
                 default:
                     throw new InvalidOperationException($"Unknown worker argument '{args[index]}'.");
@@ -142,7 +165,8 @@ internal sealed class WorkerOptions
             NodeName = nodeName,
             Endpoints = endpoints,
             SeededOwners = seededOwners,
-            HeartbeatMilliseconds = heartbeatMilliseconds
+            HeartbeatMilliseconds = heartbeatMilliseconds,
+            MembershipFile = membershipFile
         };
     }
 

@@ -4,6 +4,8 @@ public interface IClusterMembership
 {
     long CurrentEpoch { get; }
 
+    void Register(string nodeName);
+
     bool IsMember(string nodeName);
 
     NodeHealthStatus GetHealth(string nodeName);
