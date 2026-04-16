@@ -498,6 +498,6 @@ internal static class BinaryCodecRequired
     public static T Require<T>(T? value, string name) where T : struct
         => value ?? throw new InvalidOperationException($"Binary payload is missing required field '{name}'.");
 
-    public static string Require(string? value, string name)
+    public static T Require<T>(T? value, string name) where T : class
         => value ?? throw new InvalidOperationException($"Binary payload is missing required field '{name}'.");
 }

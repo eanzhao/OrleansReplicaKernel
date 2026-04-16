@@ -2,9 +2,9 @@ namespace OrleansReplicaKernel.Serialization;
 
 public sealed class BinarySerializer
 {
-    private readonly Lock _codecLock = new();
-    private Dictionary<string, IBinaryCodec> _codecsByAlias;
-    private Dictionary<Type, IBinaryCodec> _codecsByType;
+    private readonly object _codecLock = new();
+    private volatile Dictionary<string, IBinaryCodec> _codecsByAlias;
+    private volatile Dictionary<Type, IBinaryCodec> _codecsByType;
 
     public BinarySerializer(IEnumerable<IBinaryCodec> codecs)
     {
@@ -275,7 +275,7 @@ public sealed class BinarySerializer
         if (alias.StartsWith(DictionaryBinaryCodec.Prefix, StringComparison.Ordinal))
         {
             var pairAliases = alias[DictionaryBinaryCodec.Prefix.Length..];
-            var separatorIndex = pairAliases.IndexOf('|');
+            var separatorIndex = pairAliases.IndexOf(DictionaryBinaryCodec.KeyValueSeparator);
             if (separatorIndex <= 0 || separatorIndex == pairAliases.Length - 1)
             {
                 throw new InvalidOperationException($"Invalid dictionary codec alias '{alias}'.");
@@ -441,6 +441,7 @@ internal sealed class ListBinaryCodec<T> : BinaryCodec<List<T>>
 internal static class DictionaryBinaryCodec
 {
     public const string Prefix = "sys.dictionary|";
+    public const char KeyValueSeparator = ';';
 
     public static IBinaryCodec Create(IBinaryCodec keyCodec, IBinaryCodec valueCodec)
     {
@@ -461,7 +462,7 @@ internal sealed class DictionaryBinaryCodec<TKey, TValue> : BinaryCodec<Dictiona
         _valueCodec = valueCodec ?? throw new ArgumentNullException(nameof(valueCodec));
     }
 
-    public override string Alias => $"{DictionaryBinaryCodec.Prefix}{_keyCodec.Alias}|{_valueCodec.Alias}";
+    public override string Alias => $"{DictionaryBinaryCodec.Prefix}{_keyCodec.Alias}{DictionaryBinaryCodec.KeyValueSeparator}{_valueCodec.Alias}";
 
     public override Dictionary<TKey, TValue> Read(ref BinaryBufferReader reader, BinarySerializer serializer)
     {
@@ -524,7 +525,7 @@ internal sealed class HashSetBinaryCodec<T> : BinaryCodec<HashSet<T>>
     public override HashSet<T> Read(ref BinaryBufferReader reader, BinarySerializer serializer)
     {
         var count = checked((int)reader.ReadVarUInt32());
-        var items = new HashSet<T>();
+        var items = new HashSet<T>(count);
 
         for (var i = 0; i < count; i++)
         {

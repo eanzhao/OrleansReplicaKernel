@@ -110,9 +110,20 @@ public sealed class TcpMessageTransport :
             throw new RemoteNodeUnavailableException(message.Target.NodeName);
         }
 
-        var payload = _messageSerializer.SerializeInvocationMessage(message);
-        var connection = await GetOrConnectAsync(message.Target.NodeName, endpoint, cancellationToken);
+        TcpTransportConnection connection;
+        try
+        {
+            connection = await GetOrConnectAsync(message.Target.NodeName, endpoint, cancellationToken);
+        }
+        catch (Exception exception) when (IsNetworkException(exception))
+        {
+            TraceLog.Write(
+                "transport",
+                $"tcp connect failed for {message.RequestId:N}/{message.AttemptId:N} to {message.Target.NodeName}: {exception.GetType().Name}");
+            throw new RemoteNodeUnavailableException(message.Target.NodeName);
+        }
 
+        var payload = _messageSerializer.SerializeInvocationMessage(message);
         try
         {
             TraceLog.Write(
@@ -178,6 +189,8 @@ public sealed class TcpMessageTransport :
         {
             await outboundState.DisposeAsync();
         }
+
+        _disposeCancellation.Dispose();
     }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
@@ -346,6 +359,8 @@ public sealed class TcpMessageTransport :
 
     private DateTimeOffset GetUtcNow() => _timeProvider.GetUtcNow();
 
+    private const int MaxFrameLength = 16 * 1024 * 1024; // 16 MB
+
     private async Task<TcpTransportFrame> ReadFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
     {
         var lengthBuffer = new byte[4];
@@ -357,12 +372,17 @@ public sealed class TcpMessageTransport :
             throw new InvalidOperationException($"Invalid TCP transport frame length '{frameLength}'.");
         }
 
+        if (frameLength > MaxFrameLength)
+        {
+            throw new InvalidOperationException($"TCP transport frame length '{frameLength}' exceeds maximum '{MaxFrameLength}'.");
+        }
+
         var frameBuffer = new byte[frameLength];
         await ReadExactlyAsync(stream, frameBuffer, cancellationToken);
 
         return new TcpTransportFrame(
             (TcpTransportFrameKind)frameBuffer[0],
-            frameLength == 1 ? ReadOnlyMemory<byte>.Empty : frameBuffer.AsMemory(1).ToArray());
+            frameLength == 1 ? ReadOnlyMemory<byte>.Empty : frameBuffer.AsMemory(1));
     }
 
     private static async Task ReadExactlyAsync(NetworkStream stream, byte[] buffer, CancellationToken cancellationToken)
@@ -566,9 +586,9 @@ public sealed class TcpMessageTransport :
                 }
             }
 
+            _onClosed(this);
             _writeLock.Dispose();
             _connectionCancellation.Dispose();
-            _onClosed(this);
         }
 
         private void StartBackgroundLoops()

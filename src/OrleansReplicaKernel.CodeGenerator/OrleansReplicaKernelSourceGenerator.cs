@@ -154,7 +154,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
 
             foreach (var currentNamespace in byNamespace)
             {
-                builder.Append("namespace ").Append(currentNamespace).AppendLine(";");
+                builder.Append("namespace ").AppendLine(currentNamespace);
+                builder.AppendLine("{");
                 builder.AppendLine();
 
                 foreach (var grainContract in GrainContracts
@@ -170,6 +171,9 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
                 {
                     objectReferenceContract.AppendSource(builder);
                 }
+
+                builder.AppendLine("}");
+                builder.AppendLine();
             }
 
             return builder.ToString();
@@ -536,7 +540,10 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
                     return null;
                 }
 
-                var isObjectReference = parameter.Type.TypeKind == TypeKind.Interface && !IsPotentialGrainContract((INamedTypeSymbol)parameter.Type);
+                var isObjectReference = parameter.Type.TypeKind == TypeKind.Interface
+                    && parameter.Type is INamedTypeSymbol paramInterfaceType
+                    && !IsPotentialGrainContract(paramInterfaceType)
+                    && IsPotentialObjectReferenceContract(paramInterfaceType);
                 parameters.Add(ParameterModel.Create(parameter, isObjectReference));
             }
 
@@ -1060,6 +1067,18 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
            && type.Name.Length > 1
            && type.Name[0] == 'I'
            && type.Name.EndsWith("Grain", StringComparison.Ordinal);
+
+    private static bool IsPotentialObjectReferenceContract(INamedTypeSymbol type)
+        => type.TypeKind == TypeKind.Interface
+           && !type.IsImplicitlyDeclared
+           && type.Name.Length > 1
+           && type.Name[0] == 'I'
+           && type.GetMembers().OfType<IMethodSymbol>()
+               .Any(m => m.MethodKind == MethodKind.Ordinary && IsAsyncReturnType(m.ReturnType));
+
+    private static bool IsAsyncReturnType(ITypeSymbol type)
+        => type.Name is "Task" or "ValueTask"
+           && type.ContainingNamespace?.ToDisplayString() is "System.Threading.Tasks";
 
     private static INamedTypeSymbol? FindImplementation(
         INamedTypeSymbol contract,

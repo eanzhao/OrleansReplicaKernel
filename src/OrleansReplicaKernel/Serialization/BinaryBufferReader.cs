@@ -120,7 +120,7 @@ public ref struct BinaryBufferReader
 
     private void EnsureAvailable(int length)
     {
-        if (_position + length > _buffer.Length)
+        if (_buffer.Length - _position < length)
         {
             throw new InvalidOperationException("Binary payload ended unexpectedly.");
         }
