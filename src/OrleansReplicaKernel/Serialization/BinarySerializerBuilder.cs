@@ -1,4 +1,5 @@
 using System.Reflection;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Serialization;
 
@@ -65,6 +66,7 @@ public sealed class BinarySerializerBuilder
         AddCodec(new GrainIdBinaryCodec());
         AddCodec(new GrainAddressBinaryCodec());
         AddCodec(new ObjectReferenceDataBinaryCodec());
+        AddCodec(new TransactionInfoBinaryCodec());
         AddCodec(new InvocationMessageBinaryCodec());
         AddCodec(new InvocationResponseMessageBinaryCodec());
     }

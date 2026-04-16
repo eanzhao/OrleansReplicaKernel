@@ -1,16 +1,23 @@
 using OrleansReplicaKernel.Identity;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Storage;
 
 internal sealed class GrainActivationContext
 {
     private readonly PersistentStateFactory _persistentStateFactory;
+    private readonly TransactionalStateFactory _transactionalStateFactory;
     private readonly Dictionary<PersistentStateCacheKey, IPersistentStateParticipant> _persistentStates = new();
+    private readonly Dictionary<TransactionalStateCacheKey, object> _transactionalStates = new();
 
-    public GrainActivationContext(GrainId grainId, PersistentStateFactory persistentStateFactory)
+    public GrainActivationContext(
+        GrainId grainId,
+        PersistentStateFactory persistentStateFactory,
+        TransactionalStateFactory transactionalStateFactory)
     {
         GrainId = grainId;
         _persistentStateFactory = persistentStateFactory ?? throw new ArgumentNullException(nameof(persistentStateFactory));
+        _transactionalStateFactory = transactionalStateFactory ?? throw new ArgumentNullException(nameof(transactionalStateFactory));
     }
 
     public GrainId GrainId { get; }
@@ -36,6 +43,27 @@ internal sealed class GrainActivationContext
         return (IPersistentState<TState>)created;
     }
 
+    public ITransactionalState<TState> ResolveTransactionalState<TState>(string stateName, string? storageName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
+
+        var normalizedStorageName = string.IsNullOrWhiteSpace(storageName)
+            ? null
+            : storageName;
+        var key = new TransactionalStateCacheKey(typeof(TState), stateName, normalizedStorageName);
+        if (_transactionalStates.TryGetValue(key, out var existing))
+        {
+            return (ITransactionalState<TState>)existing;
+        }
+
+        var created = _transactionalStateFactory.Create<TState>(
+            GrainId,
+            stateName,
+            normalizedStorageName);
+        _transactionalStates.Add(key, created);
+        return created;
+    }
+
     public async ValueTask InitializePersistentStatesAsync(CancellationToken cancellationToken = default)
     {
         foreach (var state in _persistentStates.Values)
@@ -45,6 +73,11 @@ internal sealed class GrainActivationContext
     }
 
     private readonly record struct PersistentStateCacheKey(
+        Type StateType,
+        string StateName,
+        string? StorageName);
+
+    private readonly record struct TransactionalStateCacheKey(
         Type StateType,
         string StateName,
         string? StorageName);

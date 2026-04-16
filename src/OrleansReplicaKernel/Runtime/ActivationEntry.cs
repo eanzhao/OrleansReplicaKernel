@@ -6,6 +6,7 @@ using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Scheduling;
 using OrleansReplicaKernel.Streaming;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Runtime;
 
@@ -109,6 +110,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                     ResolveReminderRegistry(runtime),
                     ResolveStreamRuntime(runtime),
                     _timeProvider,
+                    message.Transaction,
                     async () =>
                     {
                         TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");
@@ -429,6 +431,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         ResolveReminderRegistry(runtime),
                         ResolveStreamRuntime(runtime),
                         _timeProvider,
+                        transaction: null,
                         async () =>
                         {
                             TraceLog.Write("timer", $"fire {timerName} on {GrainId} chain={requestChainId:N}");
@@ -468,6 +471,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         ResolveReminderRegistry(runtime),
                         ResolveStreamRuntime(runtime),
                         _timeProvider,
+                        transaction: null,
                         async () =>
                         {
                             TraceLog.Write("activation", $"activate {GrainId}");
@@ -529,6 +533,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                 ResolveReminderRegistry(runtime),
                 ResolveStreamRuntime(runtime),
                 _timeProvider,
+                transaction: null,
                 async () =>
                 {
                     await participant.OnDeactivateAsync(reason, CancellationToken.None);

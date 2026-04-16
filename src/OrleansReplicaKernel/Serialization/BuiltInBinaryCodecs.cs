@@ -2,6 +2,7 @@ using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Runtime;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Serialization;
 
@@ -422,6 +423,7 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         GrainAddress? target = null;
         IInvokable? invokable = null;
         var sourceKind = InvocationSourceKind.ClusterNode;
+        TransactionInfo? transaction = null;
 
         while (reader.TryReadField(out var fieldId, out var payload))
         {
@@ -451,6 +453,9 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
                 case 8:
                     sourceKind = (InvocationSourceKind)serializer.Read<int>(payload);
                     break;
+                case 9:
+                    transaction = serializer.ReadOptional<TransactionInfo>(payload);
+                    break;
             }
         }
 
@@ -462,7 +467,8 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
             BinaryCodecRequired.Require(sourceNodeName, nameof(InvocationMessage.SourceNodeName)),
             BinaryCodecRequired.Require(target, nameof(InvocationMessage.Target)),
             invokable ?? throw new InvalidOperationException("InvocationMessage is missing invokable payload."),
-            sourceKind);
+            sourceKind,
+            transaction);
     }
 
     protected override void WriteFields(BinaryObjectWriter writer, InvocationMessage value, BinarySerializer serializer)
@@ -475,6 +481,7 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         writer.WriteField(6, value.Target, serializer);
         writer.WriteDynamicField(7, value.Invokable, serializer);
         writer.WriteField(8, (int)value.SourceKind, serializer);
+        writer.WriteOptionalField(9, value.Transaction, serializer);
     }
 }
 

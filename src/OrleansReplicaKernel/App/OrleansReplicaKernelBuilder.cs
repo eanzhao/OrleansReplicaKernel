@@ -10,6 +10,7 @@ using OrleansReplicaKernel.Scheduling;
 using OrleansReplicaKernel.Serialization;
 using OrleansReplicaKernel.Storage;
 using OrleansReplicaKernel.Streaming;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.App;
 
@@ -368,7 +369,11 @@ public sealed class OrleansReplicaKernelBuilder
         RegisterGeneratedObjectReferences();
 
         var grainPolicies = BuildGrainPolicies();
-        var persistentStateFactory = BuildPersistentStateFactory();
+        var storageResolver = BuildStorageResolver();
+        var transactionCoordinator = new TransactionCoordinator(storageResolver, _timeProvider);
+        var persistentStateFactory = BuildPersistentStateFactory(storageResolver);
+        var transactionalStateFactory = BuildTransactionalStateFactory(storageResolver, transactionCoordinator);
+        var transactionClient = new TransactionClient(transactionCoordinator, _timeProvider);
         var messageSerializer = BuildMessageSerializer();
         var allNodeNames = ResolveNodeNames(nodeName, peerNodeNames);
         var (membership, membershipViews, membershipGossiper) = BuildMembership(nodeName, allNodeNames);
@@ -391,6 +396,8 @@ public sealed class OrleansReplicaKernelBuilder
                 membershipGossiper,
                 failureDetector,
                 persistentStateFactory,
+                transactionalStateFactory,
+                transactionClient,
                 objectReferenceFactoryRegistry,
                 messageSerializer);
         }
@@ -402,7 +409,8 @@ public sealed class OrleansReplicaKernelBuilder
         var probeService = new InProcessClusterProbeService(nodeName, membership, nodeRegistry, failureDetector);
         var (locators, callbackDirectories, runtimes) =
             BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
-                grainDirectory, persistentStateFactory, objectReferenceFactoryRegistry, activationDirectories, messageSerializer);
+                grainDirectory, persistentStateFactory, transactionalStateFactory, objectReferenceFactoryRegistry,
+                activationDirectories, messageSerializer);
         var streamProviders = BuildMemoryStreamProviders(messageSerializer.Serializer, runtimes[nodeName]);
         if (streamProviders.Count > 0)
         {
@@ -441,6 +449,7 @@ public sealed class OrleansReplicaKernelBuilder
                 .Concat(runtimes.Values)
                 .Concat(callbackDirectories.Values)
                 .ToArray(),
+            transactionClient,
             bindings);
     }
 
@@ -480,6 +489,8 @@ public sealed class OrleansReplicaKernelBuilder
             }
         }
 
+        var storageResolver = BuildStorageResolver();
+        var transactionCoordinator = new TransactionCoordinator(storageResolver, _timeProvider);
         var messageSerializer = BuildMessageSerializer();
         var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
         var gatewaySelector = new RoundRobinGatewaySelector(gateways);
@@ -491,6 +502,7 @@ public sealed class OrleansReplicaKernelBuilder
             new Dictionary<string, GrainTypeCollectionPolicy>(StringComparer.Ordinal),
             callbackDirectory,
             PersistentStateFactory.Empty,
+            TransactionalStateFactory.Empty,
             new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal),
             _timeProvider);
         var peerEndpoints = gateways.ToDictionary(
@@ -531,6 +543,7 @@ public sealed class OrleansReplicaKernelBuilder
             objectReferenceFactoryRegistry,
             gatewaySelector,
             [runtime, callbackDirectory, transport],
+            new TransactionClient(transactionCoordinator, _timeProvider),
             BuildBindings());
     }
 
@@ -544,10 +557,18 @@ public sealed class OrleansReplicaKernelBuilder
         _grainImplementations.Values.ToDictionary(
             item => item.GrainType, item => new GrainTypeSchedulingPolicy(item.InterleavableMethods), StringComparer.Ordinal));
 
-    private PersistentStateFactory BuildPersistentStateFactory()
+    private GrainStorageResolver BuildStorageResolver()
         => new(
             _defaultGrainStorage,
             new Dictionary<string, IGrainStorage>(_namedGrainStorages, StringComparer.Ordinal));
+
+    private static PersistentStateFactory BuildPersistentStateFactory(GrainStorageResolver storageResolver)
+        => new(storageResolver);
+
+    private TransactionalStateFactory BuildTransactionalStateFactory(
+        GrainStorageResolver storageResolver,
+        TransactionCoordinator transactionCoordinator)
+        => new(storageResolver, transactionCoordinator, _timeProvider);
 
     private string[] ResolveNodeNames(string nodeName, string[] peerNodeNames)
     {
@@ -786,6 +807,8 @@ public sealed class OrleansReplicaKernelBuilder
         InProcessMembershipGossiper membershipGossiper,
         IFailureDetector failureDetector,
         PersistentStateFactory persistentStateFactory,
+        TransactionalStateFactory transactionalStateFactory,
+        TransactionClient transactionClient,
         ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
         BinaryMessageSerializer messageSerializer)
     {
@@ -814,6 +837,7 @@ public sealed class OrleansReplicaKernelBuilder
                 grainPolicies.CollectionPolicies,
                 callbackDirectory,
                 persistentStateFactory,
+                transactionalStateFactory,
                 grainPolicies.SchedulingPolicies,
                 _timeProvider)
             : LocalActivationDirectory.Restore(
@@ -821,6 +845,7 @@ public sealed class OrleansReplicaKernelBuilder
                 grainPolicies.CollectionPolicies,
                 callbackDirectory,
                 persistentStateFactory,
+                transactionalStateFactory,
                 grainPolicies.SchedulingPolicies,
                 _timeProvider,
                 activationCheckpoint);
@@ -906,6 +931,7 @@ public sealed class OrleansReplicaKernelBuilder
             reminderService is null
                 ? [runtime, callbackDirectory, transport]
                 : [reminderService, runtime, callbackDirectory, transport],
+            transactionClient,
             bindings);
     }
 
@@ -919,6 +945,7 @@ public sealed class OrleansReplicaKernelBuilder
         IFailureDetector failureDetector,
         IGrainDirectory grainDirectory,
         PersistentStateFactory persistentStateFactory,
+        TransactionalStateFactory transactionalStateFactory,
         ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
         Dictionary<string, IActivationDirectory> activationDirectories,
         BinaryMessageSerializer messageSerializer)
@@ -941,10 +968,12 @@ public sealed class OrleansReplicaKernelBuilder
             var activationDirectory = activationCheckpoint is null
                 ? new LocalActivationDirectory(
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
-                    callbackDirectory, persistentStateFactory, grainPolicies.SchedulingPolicies, _timeProvider)
+                    callbackDirectory, persistentStateFactory, transactionalStateFactory,
+                    grainPolicies.SchedulingPolicies, _timeProvider)
                 : LocalActivationDirectory.Restore(
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
-                    callbackDirectory, persistentStateFactory, grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint);
+                    callbackDirectory, persistentStateFactory, transactionalStateFactory,
+                    grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint);
             var router = new LocalGrainRouter(currentNodeName, locator);
             var runtime = new InProcessRuntime(
                 currentNodeName, failureDetector, locator, router, activationDirectory,
@@ -1271,7 +1300,7 @@ public sealed class OrleansReplicaKernelBuilder
         if (supportedConstructors.Length == 0)
         {
             throw new InvalidOperationException(
-                $"Generated grain implementation '{implementationType.FullName}' must expose either a public parameterless constructor or a single public constructor whose parameters are annotated persistent states.");
+                $"Generated grain implementation '{implementationType.FullName}' must expose either a public parameterless constructor or a single public constructor whose parameters are annotated persistent or transactional states.");
         }
 
         if (supportedConstructors.Length > 1)
@@ -1321,35 +1350,70 @@ public sealed class OrleansReplicaKernelBuilder
     {
         resolver = default!;
 
-        if (!parameter.ParameterType.IsGenericType
-            || parameter.ParameterType.GetGenericTypeDefinition() != typeof(IPersistentState<>))
+        if (!parameter.ParameterType.IsGenericType)
         {
             return false;
         }
 
-        var attribute = parameter.GetCustomAttribute<PersistentStateAttribute>();
-        if (attribute is null)
+        var genericTypeDefinition = parameter.ParameterType.GetGenericTypeDefinition();
+        if (genericTypeDefinition == typeof(IPersistentState<>))
         {
-            throw new InvalidOperationException(
-                $"Persistent state parameter '{parameter.Name}' on generated grain implementation constructor must declare [{nameof(PersistentStateAttribute)}].");
+            var attribute = parameter.GetCustomAttribute<PersistentStateAttribute>();
+            if (attribute is null)
+            {
+                throw new InvalidOperationException(
+                    $"Persistent state parameter '{parameter.Name}' on generated grain implementation constructor must declare [{nameof(PersistentStateAttribute)}].");
+            }
+
+            var stateName = string.IsNullOrWhiteSpace(attribute.StateName)
+                ? parameter.Name
+                : attribute.StateName;
+            if (string.IsNullOrWhiteSpace(stateName))
+            {
+                throw new InvalidOperationException(
+                    "Persistent state constructor parameters must declare a state name or use a non-empty parameter name.");
+            }
+
+            var stateType = parameter.ParameterType.GetGenericArguments()[0];
+            var resolveMethod = typeof(GrainActivationContext)
+                .GetMethod(nameof(GrainActivationContext.ResolvePersistentState))
+                ?.MakeGenericMethod(stateType)
+                ?? throw new InvalidOperationException("Persistent state activation context is missing its resolver.");
+
+            resolver = context => resolveMethod.Invoke(context, [stateName, attribute.StorageName]);
+            return true;
         }
 
-        var stateName = string.IsNullOrWhiteSpace(attribute.StateName)
+        if (genericTypeDefinition != typeof(ITransactionalState<>))
+        {
+            return false;
+        }
+
+        var transactionalAttribute = parameter.GetCustomAttribute<TransactionalStateAttribute>();
+        if (transactionalAttribute is null)
+        {
+            throw new InvalidOperationException(
+                $"Transactional state parameter '{parameter.Name}' on generated grain implementation constructor must declare [{nameof(TransactionalStateAttribute)}].");
+        }
+
+        var transactionalStateName = string.IsNullOrWhiteSpace(transactionalAttribute.StateName)
             ? parameter.Name
-            : attribute.StateName;
-        if (string.IsNullOrWhiteSpace(stateName))
+            : transactionalAttribute.StateName;
+        if (string.IsNullOrWhiteSpace(transactionalStateName))
         {
             throw new InvalidOperationException(
-                "Persistent state constructor parameters must declare a state name or use a non-empty parameter name.");
+                "Transactional state constructor parameters must declare a state name or use a non-empty parameter name.");
         }
 
-        var stateType = parameter.ParameterType.GetGenericArguments()[0];
-        var resolveMethod = typeof(GrainActivationContext)
-            .GetMethod(nameof(GrainActivationContext.ResolvePersistentState))
-            ?.MakeGenericMethod(stateType)
-            ?? throw new InvalidOperationException("Persistent state activation context is missing its resolver.");
+        var transactionalStateType = parameter.ParameterType.GetGenericArguments()[0];
+        var transactionalResolveMethod = typeof(GrainActivationContext)
+            .GetMethod(nameof(GrainActivationContext.ResolveTransactionalState))
+            ?.MakeGenericMethod(transactionalStateType)
+            ?? throw new InvalidOperationException("Transactional state activation context is missing its resolver.");
 
-        resolver = context => resolveMethod.Invoke(context, [stateName, attribute.StorageName]);
+        resolver = context => transactionalResolveMethod.Invoke(
+            context,
+            [transactionalStateName, transactionalAttribute.StorageName]);
         return true;
     }
 

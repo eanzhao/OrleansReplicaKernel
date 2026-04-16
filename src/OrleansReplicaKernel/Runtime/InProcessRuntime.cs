@@ -6,6 +6,7 @@ using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Streaming;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Runtime;
 
@@ -353,7 +354,8 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
             NodeName,
             new GrainAddress(NodeName, grainId, OwnerVersion: 0),
             invokable,
-            _sourceKind);
+            _sourceKind,
+            TransactionContext.Current);
         var routedAddress = _router.Route(message);
         var routedMessage = message with { Target = routedAddress };
 

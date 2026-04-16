@@ -2,6 +2,7 @@ using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.App;
 
@@ -26,6 +27,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
     private readonly IReadOnlyDictionary<string, InProcessRuntime> _runtimes;
     private readonly IReadOnlyList<IAsyncDisposable> _managedNodes;
     private readonly IReadOnlyDictionary<Type, OrleansReplicaKernelRegistration> _registrations;
+    private readonly TransactionClient _transactionClient;
 
     internal OrleansReplicaKernelHost(
         string nodeName,
@@ -47,6 +49,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
         IReadOnlyDictionary<string, InProcessRuntime> runtimes,
         IReadOnlyList<IAsyncDisposable> managedNodes,
+        TransactionClient transactionClient,
         IReadOnlyDictionary<Type, OrleansReplicaKernelRegistration> registrations)
     {
         _nodeName = nodeName;
@@ -68,6 +71,7 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         _objectReferenceFactoryRegistry = objectReferenceFactoryRegistry;
         _runtimes = runtimes;
         _managedNodes = managedNodes;
+        _transactionClient = transactionClient ?? throw new ArgumentNullException(nameof(transactionClient));
         _registrations = registrations;
     }
 
@@ -238,6 +242,30 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
 
         await MoveOwnerAsync(grainId, targetNodeName, $"handoff {grainId}");
         return true;
+    }
+
+    public ValueTask RunTransactionAsync(
+        Func<CancellationToken, Task> callback,
+        int maxRetries = 3,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        return _transactionClient.RunAsync(
+            ct => new ValueTask(callback(ct)),
+            maxRetries,
+            cancellationToken);
+    }
+
+    public ValueTask<TResult> RunTransactionAsync<TResult>(
+        Func<CancellationToken, Task<TResult>> callback,
+        int maxRetries = 3,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        return _transactionClient.RunAsync(
+            ct => new ValueTask<TResult>(callback(ct)),
+            maxRetries,
+            cancellationToken);
     }
 
     public async ValueTask SetNodeHealthAsync(string nodeName, NodeHealthStatus status)

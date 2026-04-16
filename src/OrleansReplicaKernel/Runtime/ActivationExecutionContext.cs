@@ -2,6 +2,7 @@ using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Streaming;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Runtime;
 
@@ -23,6 +24,8 @@ public static class ActivationExecutionContext
 
     public static TimeProvider? CurrentTimeProvider => CurrentStateSlot.Value?.TimeProvider;
 
+    public static TransactionInfo? CurrentTransaction => TransactionContext.Current;
+
     public static async ValueTask<T> RunAsync<T>(
         IInvocationRuntime runtime,
         GrainId grainId,
@@ -31,9 +34,11 @@ public static class ActivationExecutionContext
         IGrainReminderRegistry? reminderRegistry,
         IGrainStreamRuntime? streamRuntime,
         TimeProvider timeProvider,
+        TransactionInfo? transaction,
         Func<ValueTask<T>> callback)
     {
         var previousState = CurrentStateSlot.Value;
+        using var transactionScope = TransactionContext.Enter(transaction);
         CurrentStateSlot.Value = new ExecutionState(
             runtime,
             grainId,

@@ -3,6 +3,7 @@ using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
 using OrleansReplicaKernel.Storage;
+using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Routing;
 
@@ -19,6 +20,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     private readonly IReadOnlyDictionary<string, GrainTypeCollectionPolicy> _grainCollectionPolicies;
     private readonly IReadOnlyDictionary<string, GrainTypeSchedulingPolicy> _grainSchedulingPolicies;
     private readonly PersistentStateFactory _persistentStateFactory;
+    private readonly TransactionalStateFactory _transactionalStateFactory;
     private readonly Dictionary<GrainId, ActivationEntry> _activations = new();
     private readonly Dictionary<GrainId, PendingHandoffState> _pendingHandoffStates = new();
     private readonly Dictionary<GrainId, ActivationMetadataRecord> _recoveredMetadata = new();
@@ -35,6 +37,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             grainCollectionPolicies,
             callbackDirectory,
             PersistentStateFactory.Empty,
+            TransactionalStateFactory.Empty,
             grainSchedulingPolicies,
             timeProvider,
             checkpoint: null)
@@ -46,6 +49,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
         PersistentStateFactory persistentStateFactory,
+        TransactionalStateFactory transactionalStateFactory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint? checkpoint = null)
@@ -54,6 +58,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         _grainCollectionPolicies = grainCollectionPolicies;
         _callbackDirectory = callbackDirectory;
         _persistentStateFactory = persistentStateFactory ?? throw new ArgumentNullException(nameof(persistentStateFactory));
+        _transactionalStateFactory = transactionalStateFactory ?? throw new ArgumentNullException(nameof(transactionalStateFactory));
         _timeProvider = timeProvider ?? TimeProvider.System;
         _grainSchedulingPolicies = grainSchedulingPolicies ?? new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal);
 
@@ -131,7 +136,10 @@ public sealed class LocalActivationDirectory : IActivationDirectory
                     $"recover activation metadata {address.GrainId} on {address.NodeName} last-touched={recovered.LastTouchedUtc:O} owner-v{recovered.OwnerVersion}, create fresh instance");
             }
 
-            var activationContext = new GrainActivationContext(address.GrainId, _persistentStateFactory);
+            var activationContext = new GrainActivationContext(
+                address.GrainId,
+                _persistentStateFactory,
+                _transactionalStateFactory);
             var instance = grainFactory(activationContext);
             try
             {
@@ -405,6 +413,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             grainCollectionPolicies,
             callbackDirectory,
             PersistentStateFactory.Empty,
+            TransactionalStateFactory.Empty,
             grainSchedulingPolicies,
             timeProvider,
             checkpoint);
@@ -414,6 +423,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
         PersistentStateFactory persistentStateFactory,
+        TransactionalStateFactory transactionalStateFactory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint checkpoint)
@@ -422,6 +432,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             grainCollectionPolicies,
             callbackDirectory,
             persistentStateFactory,
+            transactionalStateFactory,
             grainSchedulingPolicies,
             timeProvider,
             checkpoint);
