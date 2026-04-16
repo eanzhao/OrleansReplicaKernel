@@ -3,11 +3,12 @@ using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
+using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Routing;
 
 namespace OrleansReplicaKernel.Runtime;
 
-public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver, IResponseReceiver, IAsyncDisposable
+public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver, IResponseReceiver, IAsyncDisposable, IReminderRuntimeContext
 {
     private const int MaxAttempts = 4;
 
@@ -22,6 +23,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _responseHistoryRetention;
     private readonly InvocationSourceKind _sourceKind;
+    private LocalReminderService? _reminderService;
     private readonly Dictionary<Guid, CompletedRequestEntry> _completedRequests = new();
     private readonly Dictionary<Guid, Task<InvocationResponseMessage>> _inflightRequests = new();
     private readonly Dictionary<Guid, PendingResponseRegistration> _pendingResponses = new();
@@ -59,6 +61,11 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
     public string NodeName { get; }
 
     public ObjectReferenceFactoryRegistry ObjectReferences => _objectReferences;
+
+    internal void BindReminderService(LocalReminderService reminderService)
+    {
+        _reminderService = reminderService ?? throw new ArgumentNullException(nameof(reminderService));
+    }
 
     public ResponseDispositionSnapshot GetResponseDispositionSnapshot()
     {
@@ -318,6 +325,9 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
     }
 
     public ValueTask DisposeAsync() => _activationDirectory.DisposeAsync();
+
+    IGrainReminderRegistry? IReminderRuntimeContext.GetReminderRegistry(GrainId grainId)
+        => _reminderService?.BindToGrain(grainId);
 
     private InvocationMessage CreateRoutedMessage(
         Guid requestId,

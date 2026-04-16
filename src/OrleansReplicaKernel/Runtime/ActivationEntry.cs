@@ -3,6 +3,7 @@ using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Routing;
+using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Scheduling;
 
 namespace OrleansReplicaKernel.Runtime;
@@ -94,6 +95,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                     GrainId,
                     message.RequestChainId,
                     this,
+                    ResolveReminderRegistry(runtime),
                     _timeProvider,
                     async () =>
                     {
@@ -356,6 +358,7 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         GrainId,
                         requestChainId,
                         this,
+                        ResolveReminderRegistry(runtime),
                         _timeProvider,
                         async () =>
                         {
@@ -383,6 +386,11 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
             _timers.Remove(timerId);
         }
     }
+
+    private IGrainReminderRegistry? ResolveReminderRegistry(IInvocationRuntime runtime)
+        => runtime is IReminderRuntimeContext reminderRuntimeContext
+            ? reminderRuntimeContext.GetReminderRegistry(GrainId)
+            : null;
 
     private void Touch() => Interlocked.Exchange(ref _lastTouchedUtcTicks, _timeProvider.GetUtcNow().UtcTicks);
 }

@@ -3,6 +3,7 @@ using System.Reflection;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
 using OrleansReplicaKernel.Messaging;
+using OrleansReplicaKernel.Reminders;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
@@ -26,9 +27,11 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly HashSet<Assembly> _generatedObjectReferenceAssemblies = [];
     private IGrainDirectoryTable? _grainDirectoryTable;
     private IMembershipTable? _membershipTable;
+    private IReminderTable? _reminderTable;
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
     private int _membershipGossipFanout = 1;
     private int _membershipAntiEntropyInterval = 4;
+    private TimeSpan _reminderScanInterval = TimeSpan.FromMilliseconds(50);
     private TimeSpan _tcpHeartbeatInterval = TimeSpan.FromMilliseconds(250);
     private TimeProvider _timeProvider = TimeProvider.System;
     private bool _useTcpTransport;
@@ -245,6 +248,31 @@ public sealed class OrleansReplicaKernelBuilder
         return this;
     }
 
+    public OrleansReplicaKernelBuilder WithReminderTable(IReminderTable reminderTable)
+    {
+        _reminderTable = reminderTable ?? throw new ArgumentNullException(nameof(reminderTable));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseFileReminderTable(string path)
+    {
+        _reminderTable = new FileReminderTable(path);
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder WithReminderScanInterval(TimeSpan reminderScanInterval)
+    {
+        if (reminderScanInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(reminderScanInterval),
+                "Reminder scan interval must be positive.");
+        }
+
+        _reminderScanInterval = reminderScanInterval;
+        return this;
+    }
+
     public OrleansReplicaKernelBuilder WithDefaultGrainStorage(IGrainStorage grainStorage)
     {
         _defaultGrainStorage = grainStorage ?? throw new ArgumentNullException(nameof(grainStorage));
@@ -341,6 +369,7 @@ public sealed class OrleansReplicaKernelBuilder
         var (locators, callbackDirectories, runtimes) =
             BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
                 grainDirectory, persistentStateFactory, objectReferenceFactoryRegistry, activationDirectories, messageSerializer);
+        var reminderServices = BuildReminderServices(allNodeNames, grainDirectory, runtimes);
 
         var bindings = BuildBindings();
 
@@ -363,7 +392,8 @@ public sealed class OrleansReplicaKernelBuilder
             callbackDirectories,
             objectReferenceFactoryRegistry,
             runtimes,
-            runtimes.Values.Cast<IAsyncDisposable>()
+            reminderServices.Values.Cast<IAsyncDisposable>()
+                .Concat(runtimes.Values)
                 .Concat(callbackDirectories.Values)
                 .ToArray(),
             bindings);
@@ -773,6 +803,19 @@ public sealed class OrleansReplicaKernelBuilder
             _responseHistoryRetention);
 
         transport.Bind(runtime, runtime);
+        LocalReminderService? reminderService = null;
+        if (_reminderTable is not null)
+        {
+            reminderService = new LocalReminderService(
+                nodeName,
+                _reminderTable,
+                grainDirectory,
+                _timeProvider,
+                _reminderScanInterval);
+            reminderService.Bind(runtime);
+            runtime.BindReminderService(reminderService);
+        }
+
         transport.Start();
 
         var bindings = BuildBindings();
@@ -809,7 +852,9 @@ public sealed class OrleansReplicaKernelBuilder
             callbackDirectories,
             objectReferenceFactoryRegistry,
             runtimes,
-            [runtime, callbackDirectory, transport],
+            reminderService is null
+                ? [runtime, callbackDirectory, transport]
+                : [reminderService, runtime, callbackDirectory, transport],
             bindings);
     }
 
@@ -871,6 +916,33 @@ public sealed class OrleansReplicaKernelBuilder
         => _membershipTable is null
             ? membershipView
             : new AuthoritativeClusterMembershipView(nodeName, membership, _timeProvider);
+
+    private Dictionary<string, LocalReminderService> BuildReminderServices(
+        string[] allNodeNames,
+        IGrainDirectory grainDirectory,
+        IReadOnlyDictionary<string, InProcessRuntime> runtimes)
+    {
+        var reminderServices = new Dictionary<string, LocalReminderService>(StringComparer.Ordinal);
+        if (_reminderTable is null)
+        {
+            return reminderServices;
+        }
+
+        foreach (var nodeName in allNodeNames)
+        {
+            var reminderService = new LocalReminderService(
+                nodeName,
+                _reminderTable,
+                grainDirectory,
+                _timeProvider,
+                _reminderScanInterval);
+            reminderService.Bind(runtimes[nodeName]);
+            runtimes[nodeName].BindReminderService(reminderService);
+            reminderServices.Add(nodeName, reminderService);
+        }
+
+        return reminderServices;
+    }
 
     private void RegisterGeneratedGrainImplementations()
     {
