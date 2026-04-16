@@ -7,6 +7,7 @@ using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
 using OrleansReplicaKernel.Serialization;
+using OrleansReplicaKernel.Storage;
 
 namespace OrleansReplicaKernel.App;
 
@@ -17,6 +18,7 @@ public sealed class OrleansReplicaKernelBuilder
     private readonly List<GrainOwnerRecord> _seededOwnerRecords = [];
     private readonly Dictionary<string, IPEndPoint> _tcpNodeEndpoints = new(StringComparer.Ordinal);
     private readonly Dictionary<string, GrainImplementationRegistration> _grainImplementations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, IGrainStorage> _namedGrainStorages = new(StringComparer.Ordinal);
     private readonly Dictionary<Type, GrainReferenceRegistration> _grainReferences = new();
     private readonly Dictionary<Type, ObjectReferenceRegistration> _objectReferenceRegistrations = new();
     private readonly HashSet<Assembly> _generatedGrainImplementationAssemblies = [];
@@ -33,6 +35,7 @@ public sealed class OrleansReplicaKernelBuilder
     private TimeSpan _responseHistoryRetention = TimeSpan.FromMinutes(5);
     private OrleansReplicaKernelMembershipCheckpoint? _membershipCheckpoint;
     private OrleansReplicaKernelRuntimeCheckpoint? _runtimeCheckpoint;
+    private IGrainStorage? _defaultGrainStorage;
 
     public OrleansReplicaKernelBuilder AddGrain<TContract, TGrain>(
         string grainType,
@@ -43,7 +46,7 @@ public sealed class OrleansReplicaKernelBuilder
     {
         AddGrainImplementation(
             grainType,
-            () => grainFactory(),
+            _ => grainFactory(),
             collectionAgeLimit: null,
             preferLocalPlacement: false,
             interleavableMethods: null,
@@ -68,7 +71,7 @@ public sealed class OrleansReplicaKernelBuilder
     {
         AddGrainImplementation(
             grainType,
-            () => grainFactory(),
+            _ => grainFactory(),
             collectionAgeLimit: null,
             preferLocalPlacement: false,
             interleavableMethods: null,
@@ -242,6 +245,34 @@ public sealed class OrleansReplicaKernelBuilder
         return this;
     }
 
+    public OrleansReplicaKernelBuilder WithDefaultGrainStorage(IGrainStorage grainStorage)
+    {
+        _defaultGrainStorage = grainStorage ?? throw new ArgumentNullException(nameof(grainStorage));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder WithGrainStorage(string storageName, IGrainStorage grainStorage)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageName);
+
+        _namedGrainStorages[storageName] = grainStorage ?? throw new ArgumentNullException(nameof(grainStorage));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseFileGrainStorage(string path)
+    {
+        _defaultGrainStorage = new FileGrainStorage(path);
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseFileGrainStorage(string storageName, string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageName);
+
+        _namedGrainStorages[storageName] = new FileGrainStorage(path);
+        return this;
+    }
+
     public OrleansReplicaKernelBuilder WithResponseHistoryRetention(TimeSpan retention)
     {
         if (retention < TimeSpan.Zero)
@@ -281,6 +312,7 @@ public sealed class OrleansReplicaKernelBuilder
         RegisterGeneratedObjectReferences();
 
         var grainPolicies = BuildGrainPolicies();
+        var persistentStateFactory = BuildPersistentStateFactory();
         var messageSerializer = BuildMessageSerializer();
         var allNodeNames = ResolveNodeNames(nodeName, peerNodeNames);
         var (membership, membershipViews, membershipGossiper) = BuildMembership(nodeName, allNodeNames);
@@ -296,6 +328,7 @@ public sealed class OrleansReplicaKernelBuilder
                 membershipViews,
                 membershipGossiper,
                 failureDetector,
+                persistentStateFactory,
                 objectReferenceFactoryRegistry,
                 messageSerializer);
         }
@@ -307,7 +340,7 @@ public sealed class OrleansReplicaKernelBuilder
         var probeService = new InProcessClusterProbeService(nodeName, membership, nodeRegistry, failureDetector);
         var (locators, callbackDirectories, runtimes) =
             BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
-                grainDirectory, objectReferenceFactoryRegistry, activationDirectories, messageSerializer);
+                grainDirectory, persistentStateFactory, objectReferenceFactoryRegistry, activationDirectories, messageSerializer);
 
         var bindings = BuildBindings();
 
@@ -373,9 +406,10 @@ public sealed class OrleansReplicaKernelBuilder
         var router = new LocalGrainRouter(nodeName, locator);
         var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
         var activationDirectory = new LocalActivationDirectory(
-            new Dictionary<string, Func<object>>(StringComparer.Ordinal),
+            new Dictionary<string, Func<GrainActivationContext, object>>(StringComparer.Ordinal),
             new Dictionary<string, GrainTypeCollectionPolicy>(StringComparer.Ordinal),
             callbackDirectory,
+            PersistentStateFactory.Empty,
             new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal),
             _timeProvider);
         var peerEndpoints = gateways.ToDictionary(
@@ -428,6 +462,11 @@ public sealed class OrleansReplicaKernelBuilder
             item => item.GrainType, item => new GrainTypePlacementHint(item.PreferLocalPlacement), StringComparer.Ordinal),
         _grainImplementations.Values.ToDictionary(
             item => item.GrainType, item => new GrainTypeSchedulingPolicy(item.InterleavableMethods), StringComparer.Ordinal));
+
+    private PersistentStateFactory BuildPersistentStateFactory()
+        => new(
+            _defaultGrainStorage,
+            new Dictionary<string, IGrainStorage>(_namedGrainStorages, StringComparer.Ordinal));
 
     private string[] ResolveNodeNames(string nodeName, string[] peerNodeNames)
     {
@@ -665,6 +704,7 @@ public sealed class OrleansReplicaKernelBuilder
         Dictionary<string, GossipedClusterMembershipView> membershipViews,
         InProcessMembershipGossiper membershipGossiper,
         IFailureDetector failureDetector,
+        PersistentStateFactory persistentStateFactory,
         ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
         BinaryMessageSerializer messageSerializer)
     {
@@ -692,12 +732,14 @@ public sealed class OrleansReplicaKernelBuilder
                 grainPolicies.Factories,
                 grainPolicies.CollectionPolicies,
                 callbackDirectory,
+                persistentStateFactory,
                 grainPolicies.SchedulingPolicies,
                 _timeProvider)
             : LocalActivationDirectory.Restore(
                 grainPolicies.Factories,
                 grainPolicies.CollectionPolicies,
                 callbackDirectory,
+                persistentStateFactory,
                 grainPolicies.SchedulingPolicies,
                 _timeProvider,
                 activationCheckpoint);
@@ -780,6 +822,7 @@ public sealed class OrleansReplicaKernelBuilder
         InProcessNodeRegistry nodeRegistry,
         IFailureDetector failureDetector,
         IGrainDirectory grainDirectory,
+        PersistentStateFactory persistentStateFactory,
         ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
         Dictionary<string, IActivationDirectory> activationDirectories,
         BinaryMessageSerializer messageSerializer)
@@ -802,10 +845,10 @@ public sealed class OrleansReplicaKernelBuilder
             var activationDirectory = activationCheckpoint is null
                 ? new LocalActivationDirectory(
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
-                    callbackDirectory, grainPolicies.SchedulingPolicies, _timeProvider)
+                    callbackDirectory, persistentStateFactory, grainPolicies.SchedulingPolicies, _timeProvider)
                 : LocalActivationDirectory.Restore(
                     grainPolicies.Factories, grainPolicies.CollectionPolicies,
-                    callbackDirectory, grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint);
+                    callbackDirectory, persistentStateFactory, grainPolicies.SchedulingPolicies, _timeProvider, activationCheckpoint);
             var router = new LocalGrainRouter(currentNodeName, locator);
             var runtime = new InProcessRuntime(
                 currentNodeName, failureDetector, locator, router, activationDirectory,
@@ -842,7 +885,7 @@ public sealed class OrleansReplicaKernelBuilder
 
                 foreach (var attribute in implementationType.GetCustomAttributes<GeneratedGrainImplementationAttribute>())
                 {
-                    ValidateGeneratedGrainImplementation(implementationType, attribute.GrainType);
+                    var grainFactory = CreateGeneratedGrainFactory(implementationType, attribute.GrainType);
 
                     if (_grainImplementations.TryGetValue(attribute.GrainType, out var existingRegistration)
                         && !existingRegistration.IsGenerated)
@@ -850,11 +893,10 @@ public sealed class OrleansReplicaKernelBuilder
                         continue;
                     }
 
-                    var constructor = implementationType.GetConstructor(Type.EmptyTypes);
                     var collectionAgeLimit = ResolveCollectionAgeLimit(attribute);
                     AddGrainImplementation(
                         attribute.GrainType,
-                        () => constructor!.Invoke([])!,
+                        grainFactory,
                         collectionAgeLimit,
                         attribute.PreferLocalPlacement,
                         attribute.InterleavableMethods,
@@ -954,7 +996,7 @@ public sealed class OrleansReplicaKernelBuilder
 
     private void AddGrainImplementation(
         string grainType,
-        Func<object> grainFactory,
+        Func<GrainActivationContext, object> grainFactory,
         TimeSpan? collectionAgeLimit,
         bool preferLocalPlacement,
         IReadOnlyCollection<string>? interleavableMethods,
@@ -1075,7 +1117,7 @@ public sealed class OrleansReplicaKernelBuilder
         }
     }
 
-    private static void ValidateGeneratedGrainImplementation(Type implementationType, string grainType)
+    private static Func<GrainActivationContext, object> CreateGeneratedGrainFactory(Type implementationType, string grainType)
     {
         if (string.IsNullOrWhiteSpace(grainType))
         {
@@ -1083,11 +1125,94 @@ public sealed class OrleansReplicaKernelBuilder
                 $"Generated grain implementation '{implementationType.FullName}' must declare a non-empty grain type.");
         }
 
-        if (implementationType.GetConstructor(Type.EmptyTypes) is null)
+        var supportedConstructors = implementationType
+            .GetConstructors()
+            .Select(TryCreateGeneratedGrainFactory)
+            .Where(item => item is not null)
+            .ToArray();
+        if (supportedConstructors.Length == 0)
         {
             throw new InvalidOperationException(
-                $"Generated grain implementation '{implementationType.FullName}' must expose a public parameterless constructor.");
+                $"Generated grain implementation '{implementationType.FullName}' must expose either a public parameterless constructor or a single public constructor whose parameters are annotated persistent states.");
         }
+
+        if (supportedConstructors.Length > 1)
+        {
+            throw new InvalidOperationException(
+                $"Generated grain implementation '{implementationType.FullName}' exposes multiple supported public constructors. Declare a single activator constructor.");
+        }
+
+        return supportedConstructors[0]!;
+    }
+
+    private static Func<GrainActivationContext, object>? TryCreateGeneratedGrainFactory(ConstructorInfo constructor)
+    {
+        var parameters = constructor.GetParameters();
+        if (parameters.Length == 0)
+        {
+            return _ => constructor.Invoke([])!;
+        }
+
+        var resolvers = new Func<GrainActivationContext, object?>[parameters.Length];
+        for (var index = 0; index < parameters.Length; index++)
+        {
+            var parameter = parameters[index];
+            if (!TryCreateConstructorParameterResolver(parameter, out var resolver))
+            {
+                return null;
+            }
+
+            resolvers[index] = resolver;
+        }
+
+        return context =>
+        {
+            var arguments = new object?[resolvers.Length];
+            for (var index = 0; index < resolvers.Length; index++)
+            {
+                arguments[index] = resolvers[index](context);
+            }
+
+            return constructor.Invoke(arguments)!;
+        };
+    }
+
+    private static bool TryCreateConstructorParameterResolver(
+        ParameterInfo parameter,
+        out Func<GrainActivationContext, object?> resolver)
+    {
+        resolver = default!;
+
+        if (!parameter.ParameterType.IsGenericType
+            || parameter.ParameterType.GetGenericTypeDefinition() != typeof(IPersistentState<>))
+        {
+            return false;
+        }
+
+        var attribute = parameter.GetCustomAttribute<PersistentStateAttribute>();
+        if (attribute is null)
+        {
+            throw new InvalidOperationException(
+                $"Persistent state parameter '{parameter.Name}' on generated grain implementation constructor must declare [{nameof(PersistentStateAttribute)}].");
+        }
+
+        var stateName = string.IsNullOrWhiteSpace(attribute.StateName)
+            ? parameter.Name
+            : attribute.StateName;
+        if (string.IsNullOrWhiteSpace(stateName))
+        {
+            throw new InvalidOperationException(
+                "Persistent state constructor parameters must declare a state name or use a non-empty parameter name.");
+        }
+
+        var stateType = parameter.ParameterType.GetGenericArguments()[0];
+        var resolveMethod = typeof(GrainActivationContext)
+            .GetMethod(nameof(GrainActivationContext.ResolvePersistentState))
+            ?.MakeGenericMethod(stateType)
+            ?? throw new InvalidOperationException("Persistent state activation context is missing its resolver.");
+
+        resolver = context => resolveMethod.Invoke(context, [stateName, attribute.StorageName]);
+        return true;
     }
 
     private static TimeSpan? ResolveCollectionAgeLimit(GeneratedGrainImplementationAttribute attribute)
@@ -1123,7 +1248,7 @@ public sealed class OrleansReplicaKernelBuilder
 
     private sealed record GrainImplementationRegistration(
         string GrainType,
-        Func<object> GrainFactory,
+        Func<GrainActivationContext, object> GrainFactory,
         TimeSpan? CollectionAgeLimit,
         bool PreferLocalPlacement,
         IReadOnlyList<string> InterleavableMethods,
@@ -1144,7 +1269,7 @@ public sealed class OrleansReplicaKernelBuilder
         string SourceDescription) : IRegistrationEntry;
 
     private sealed record GrainPolicySet(
-        Dictionary<string, Func<object>> Factories,
+        Dictionary<string, Func<GrainActivationContext, object>> Factories,
         Dictionary<string, GrainTypeCollectionPolicy> CollectionPolicies,
         Dictionary<string, GrainTypePlacementHint> PlacementHints,
         Dictionary<string, GrainTypeSchedulingPolicy> SchedulingPolicies);

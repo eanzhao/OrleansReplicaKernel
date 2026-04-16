@@ -2,6 +2,7 @@ using OrleansReplicaKernel.App;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
+using OrleansReplicaKernel.Storage;
 
 namespace OrleansReplicaKernel.Routing;
 
@@ -14,9 +15,10 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     private readonly object _lock = new();
     private readonly LocalCallbackDirectory _callbackDirectory;
     private readonly TimeProvider _timeProvider;
-    private readonly IReadOnlyDictionary<string, Func<object>> _grainFactories;
+    private readonly IReadOnlyDictionary<string, Func<GrainActivationContext, object>> _grainFactories;
     private readonly IReadOnlyDictionary<string, GrainTypeCollectionPolicy> _grainCollectionPolicies;
     private readonly IReadOnlyDictionary<string, GrainTypeSchedulingPolicy> _grainSchedulingPolicies;
+    private readonly PersistentStateFactory _persistentStateFactory;
     private readonly Dictionary<GrainId, ActivationEntry> _activations = new();
     private readonly Dictionary<GrainId, PendingHandoffState> _pendingHandoffStates = new();
     private readonly Dictionary<GrainId, ActivationMetadataRecord> _recoveredMetadata = new();
@@ -29,26 +31,29 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null,
         TimeProvider? timeProvider = null)
         : this(
-            grainFactories,
+            WrapFactories(grainFactories),
             grainCollectionPolicies,
             callbackDirectory,
+            PersistentStateFactory.Empty,
             grainSchedulingPolicies,
             timeProvider,
             checkpoint: null)
     {
     }
 
-    private LocalActivationDirectory(
-        IReadOnlyDictionary<string, Func<object>> grainFactories,
+    internal LocalActivationDirectory(
+        IReadOnlyDictionary<string, Func<GrainActivationContext, object>> grainFactories,
         IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
         LocalCallbackDirectory callbackDirectory,
+        PersistentStateFactory persistentStateFactory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
-        ActivationDirectoryCheckpoint? checkpoint)
+        ActivationDirectoryCheckpoint? checkpoint = null)
     {
         _grainFactories = grainFactories;
         _grainCollectionPolicies = grainCollectionPolicies;
         _callbackDirectory = callbackDirectory;
+        _persistentStateFactory = persistentStateFactory ?? throw new ArgumentNullException(nameof(persistentStateFactory));
         _timeProvider = timeProvider ?? TimeProvider.System;
         _grainSchedulingPolicies = grainSchedulingPolicies ?? new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal);
 
@@ -126,9 +131,21 @@ public sealed class LocalActivationDirectory : IActivationDirectory
                     $"recover activation metadata {address.GrainId} on {address.NodeName} last-touched={recovered.LastTouchedUtc:O} owner-v{recovered.OwnerVersion}, create fresh instance");
             }
 
+            var activationContext = new GrainActivationContext(address.GrainId, _persistentStateFactory);
+            var instance = grainFactory(activationContext);
+            try
+            {
+                activationContext.InitializePersistentStatesAsync().GetAwaiter().GetResult();
+            }
+            catch
+            {
+                DisposeFailedActivation(instance);
+                throw;
+            }
+
             var created = new ActivationEntry(
                 address.GrainId,
-                grainFactory(),
+                instance,
                 address.OwnerVersion,
                 ResolveSchedulingPolicy(address.GrainId.GrainType),
                 _timeProvider);
@@ -375,7 +392,31 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint checkpoint)
-        => new(grainFactories, grainCollectionPolicies, callbackDirectory, grainSchedulingPolicies, timeProvider, checkpoint);
+        => new(
+            WrapFactories(grainFactories),
+            grainCollectionPolicies,
+            callbackDirectory,
+            PersistentStateFactory.Empty,
+            grainSchedulingPolicies,
+            timeProvider,
+            checkpoint);
+
+    internal static LocalActivationDirectory Restore(
+        IReadOnlyDictionary<string, Func<GrainActivationContext, object>> grainFactories,
+        IReadOnlyDictionary<string, GrainTypeCollectionPolicy> grainCollectionPolicies,
+        LocalCallbackDirectory callbackDirectory,
+        PersistentStateFactory persistentStateFactory,
+        IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
+        TimeProvider? timeProvider,
+        ActivationDirectoryCheckpoint checkpoint)
+        => new(
+            grainFactories,
+            grainCollectionPolicies,
+            callbackDirectory,
+            persistentStateFactory,
+            grainSchedulingPolicies,
+            timeProvider,
+            checkpoint);
 
     private TimeSpan ResolveIdleWindow(string grainType, TimeSpan defaultIdleWindow)
     {
@@ -415,4 +456,24 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         => _fencedOwnerVersions.TryGetValue(grainId, out var version)
             ? version
             : 0;
+
+    private static IReadOnlyDictionary<string, Func<GrainActivationContext, object>> WrapFactories(
+        IReadOnlyDictionary<string, Func<object>> grainFactories)
+        => grainFactories.ToDictionary(
+            item => item.Key,
+            item => new Func<GrainActivationContext, object>(_ => item.Value()),
+            StringComparer.Ordinal);
+
+    private static void DisposeFailedActivation(object instance)
+    {
+        switch (instance)
+        {
+            case IAsyncDisposable asyncDisposable:
+                asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                break;
+            case IDisposable disposable:
+                disposable.Dispose();
+                break;
+        }
+    }
 }
