@@ -384,6 +384,7 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         string? sourceNodeName = null;
         GrainAddress? target = null;
         IInvokable? invokable = null;
+        var sourceKind = InvocationSourceKind.ClusterNode;
 
         while (reader.TryReadField(out var fieldId, out var payload))
         {
@@ -410,6 +411,9 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
                 case 7:
                     invokable = serializer.ReadDynamic(payload) as IInvokable;
                     break;
+                case 8:
+                    sourceKind = (InvocationSourceKind)serializer.Read<int>(payload);
+                    break;
             }
         }
 
@@ -420,7 +424,8 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
             BinaryCodecRequired.Require(attemptSequence, nameof(InvocationMessage.AttemptSequence)),
             BinaryCodecRequired.Require(sourceNodeName, nameof(InvocationMessage.SourceNodeName)),
             BinaryCodecRequired.Require(target, nameof(InvocationMessage.Target)),
-            invokable ?? throw new InvalidOperationException("InvocationMessage is missing invokable payload."));
+            invokable ?? throw new InvalidOperationException("InvocationMessage is missing invokable payload."),
+            sourceKind);
     }
 
     protected override void WriteFields(BinaryObjectWriter writer, InvocationMessage value, BinarySerializer serializer)
@@ -432,6 +437,7 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         writer.WriteField(5, value.SourceNodeName, serializer);
         writer.WriteField(6, value.Target, serializer);
         writer.WriteDynamicField(7, value.Invokable, serializer);
+        writer.WriteField(8, (int)value.SourceKind, serializer);
     }
 }
 

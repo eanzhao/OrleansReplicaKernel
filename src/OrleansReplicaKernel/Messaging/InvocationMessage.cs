@@ -10,4 +10,5 @@ public sealed record InvocationMessage(
     int AttemptSequence,
     string SourceNodeName,
     GrainAddress Target,
-    IInvokable Invokable);
+    IInvokable Invokable,
+    InvocationSourceKind SourceKind = InvocationSourceKind.ClusterNode);

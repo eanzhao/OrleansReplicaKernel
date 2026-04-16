@@ -16,8 +16,15 @@ public sealed class LocalCallbackDirectory : IAsyncDisposable
     }
 
     public GrainId Register(string nodeName, string callbackType, object implementation)
+        => Register(nodeName, callbackType, implementation, nodeName);
+
+    public GrainId Register(
+        string routingNodeName,
+        string callbackType,
+        object implementation,
+        string executionNodeName)
     {
-        var grainId = CallbackTargetIdentity.Create(callbackType, nodeName);
+        var grainId = CallbackTargetIdentity.Create(callbackType, routingNodeName, executionNodeName);
         var activation = new ActivationEntry(
             grainId,
             implementation,
@@ -30,7 +37,9 @@ public sealed class LocalCallbackDirectory : IAsyncDisposable
             _callbacks.Add(grainId, activation);
         }
 
-        TraceLog.Write("callback", $"register {grainId} on {nodeName}");
+        TraceLog.Write(
+            "callback",
+            $"register {grainId} route={routingNodeName} execute={executionNodeName}");
         return grainId;
     }
 

@@ -34,11 +34,27 @@ foreach (var seed in options.SeededOwners)
     builder.SeedGrainOwner(seed.GrainType, seed.Key, seed.OwnerNodeName, seed.Version);
 }
 
-await using var host = builder.Build(
-    options.NodeName,
-    options.Endpoints.Keys
-        .Where(item => !string.Equals(item, options.NodeName, StringComparison.Ordinal))
-        .ToArray());
+OrleansReplicaKernelHost? host = null;
+OrleansReplicaKernelClient? client = null;
+
+if (options.Role == WorkerRole.Client)
+{
+    client = builder.BuildClient(
+        options.NodeName,
+        options.Endpoints.Keys.ToArray());
+}
+else
+{
+    host = builder.Build(
+        options.NodeName,
+        options.Endpoints.Keys
+            .Where(item => !string.Equals(item, options.NodeName, StringComparison.Ordinal))
+            .ToArray());
+}
+
+await using var runtime = client is not null
+    ? (IAsyncDisposable)client
+    : host!;
 
 WriteControl(new WorkerResponse("ready", null, null));
 
@@ -66,20 +82,59 @@ while (await Console.In.ReadLineAsync() is { } line)
         switch (command.Type)
         {
             case "ping":
-                var grain = host.GetGrain<IEchoGrain>(command.Key ?? throw new InvalidOperationException("ping command requires key."));
+                var grain = client is not null
+                    ? client.GetGrain<IEchoGrain>(command.Key ?? throw new InvalidOperationException("ping command requires key."))
+                    : host!.GetGrain<IEchoGrain>(command.Key ?? throw new InvalidOperationException("ping command requires key."));
                 var result = await grain.PingAsync(command.Text ?? throw new InvalidOperationException("ping command requires text."));
                 WriteControl(new WorkerResponse("result", result, null));
                 break;
+            case "observe":
+                if (client is null)
+                {
+                    throw new InvalidOperationException("observe command requires client mode.");
+                }
+
+                var observer = new RecordingEchoObserver();
+                await using (var callbackLease = client.CreateObjectReference<IEchoObserver>(
+                    callbackType: "echo-observer",
+                    implementation: observer))
+                {
+                    var observerGrain = client.GetGrain<IEchoGrain>(
+                        command.Key ?? throw new InvalidOperationException("observe command requires key."));
+                    var observerResult = await observerGrain.PingWithObserverAsync(
+                        command.Text ?? throw new InvalidOperationException("observe command requires text."),
+                        callbackLease.Handle);
+                    var payload = JsonSerializer.Serialize(
+                        new WorkerObserveResult(observerResult, observer.Snapshot()),
+                        serializerOptions);
+                    WriteControl(new WorkerResponse("observe", payload, null));
+                }
+                break;
             case "membership":
+                if (host is null)
+                {
+                    throw new InvalidOperationException("membership command requires silo mode.");
+                }
+
                 var membership = host.CaptureMembershipCheckpoint().ClusterMembership.Members
                     .Select(item => new WorkerMembershipRecord(item.NodeName, item.HealthStatus.ToString()))
                     .ToArray();
                 WriteControl(new WorkerResponse("membership", JsonSerializer.Serialize(membership, serializerOptions), null));
                 break;
             case "directory":
+                if (host is null)
+                {
+                    throw new InvalidOperationException("directory command requires silo mode.");
+                }
+
                 WriteControl(new WorkerResponse("directory", host.DescribeGrainDirectory(), null));
                 break;
             case "probe":
+                if (host is null)
+                {
+                    throw new InvalidOperationException("probe command requires silo mode.");
+                }
+
                 var probeCount = await host.RunProbeTickAsync();
                 WriteControl(new WorkerResponse("probe", probeCount.ToString(), null));
                 break;
@@ -112,7 +167,15 @@ internal sealed record WorkerResponse(string Type, string? Result, string? Error
 
 internal sealed record WorkerMembershipRecord(string NodeName, string HealthStatus);
 
+internal sealed record WorkerObserveResult(string Result, IReadOnlyList<string> ObservedValues);
+
 internal sealed record SeededOwner(string GrainType, string Key, string OwnerNodeName, long Version);
+
+internal enum WorkerRole
+{
+    Silo = 0,
+    Client = 1
+}
 
 internal sealed class WorkerOptions
 {
@@ -128,6 +191,8 @@ internal sealed class WorkerOptions
 
     public string? DirectoryFile { get; init; }
 
+    public WorkerRole Role { get; init; }
+
     public static WorkerOptions Parse(string[] args)
     {
         var nodeName = string.Empty;
@@ -136,11 +201,15 @@ internal sealed class WorkerOptions
         var heartbeatMilliseconds = 50;
         string? membershipFile = null;
         string? directoryFile = null;
+        var role = WorkerRole.Silo;
 
         for (var index = 0; index < args.Length; index++)
         {
             switch (args[index])
             {
+                case "--role":
+                    role = Enum.Parse<WorkerRole>(args[++index], ignoreCase: true);
+                    break;
                 case "--node-name":
                     nodeName = args[++index];
                     break;
@@ -169,7 +238,7 @@ internal sealed class WorkerOptions
             throw new InvalidOperationException("Worker requires --node-name.");
         }
 
-        if (!endpoints.ContainsKey(nodeName))
+        if (role == WorkerRole.Silo && !endpoints.ContainsKey(nodeName))
         {
             throw new InvalidOperationException($"Worker endpoint for '{nodeName}' is missing.");
         }
@@ -181,7 +250,8 @@ internal sealed class WorkerOptions
             SeededOwners = seededOwners,
             HeartbeatMilliseconds = heartbeatMilliseconds,
             MembershipFile = membershipFile,
-            DirectoryFile = directoryFile
+            DirectoryFile = directoryFile,
+            Role = role
         };
     }
 

@@ -309,6 +309,119 @@ public sealed class TcpMessageTransportIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task ClientProcess_CanInvokeGrainThroughGateway_AcrossIndependentProcesses()
+    {
+        var endpointMap = CreateEndpointMap("dev-node-1", "dev-node-2");
+        var sharedStateDirectory = CreateSharedStateDirectory();
+        var membershipFile = Path.Combine(sharedStateDirectory, "membership.json");
+        var grainDirectoryFile = Path.Combine(sharedStateDirectory, "grain-directory.json");
+
+        WorkerProcess? client = null;
+        WorkerProcess? node2 = null;
+        WorkerProcess? node1 = null;
+        try
+        {
+            node2 = await WorkerProcess.StartWithSharedTablesAsync(
+                "dev-node-2",
+                endpointMap,
+                membershipFile,
+                grainDirectoryFile,
+                "echo:client-via-gateway=dev-node-2");
+            node1 = await WorkerProcess.StartWithSharedTablesAsync(
+                "dev-node-1",
+                endpointMap,
+                membershipFile,
+                grainDirectoryFile);
+
+            await WaitForMembershipAsync(node1, "dev-node-1", "dev-node-2");
+            await WaitForMembershipAsync(node2, "dev-node-1", "dev-node-2");
+
+            client = await WorkerProcess.StartClientAsync("client-1", endpointMap);
+
+            var result = await client.PingAsync("client-via-gateway", "from-client");
+            var directory = await node1.GetDirectoryAsync();
+
+            Assert.Equal("echo:from-client:count=1", result);
+            Assert.Equal("echo/client-via-gateway->dev-node-2@v1", directory);
+        }
+        finally
+        {
+            if (client is not null)
+            {
+                await client.DisposeAsync();
+            }
+
+            if (node1 is not null)
+            {
+                await node1.DisposeAsync();
+            }
+
+            if (node2 is not null)
+            {
+                await node2.DisposeAsync();
+            }
+
+            DeleteSharedStateDirectory(sharedStateDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task ClientProcess_CanReceiveObserverCallback_ThroughGateway()
+    {
+        var endpointMap = CreateEndpointMap("dev-node-1", "dev-node-2");
+        var sharedStateDirectory = CreateSharedStateDirectory();
+        var membershipFile = Path.Combine(sharedStateDirectory, "membership.json");
+        var grainDirectoryFile = Path.Combine(sharedStateDirectory, "grain-directory.json");
+
+        WorkerProcess? client = null;
+        WorkerProcess? node2 = null;
+        WorkerProcess? node1 = null;
+        try
+        {
+            node2 = await WorkerProcess.StartWithSharedTablesAsync(
+                "dev-node-2",
+                endpointMap,
+                membershipFile,
+                grainDirectoryFile,
+                "echo:client-callback=dev-node-2");
+            node1 = await WorkerProcess.StartWithSharedTablesAsync(
+                "dev-node-1",
+                endpointMap,
+                membershipFile,
+                grainDirectoryFile);
+
+            await WaitForMembershipAsync(node1, "dev-node-1", "dev-node-2");
+            await WaitForMembershipAsync(node2, "dev-node-1", "dev-node-2");
+
+            client = await WorkerProcess.StartClientAsync("client-1", endpointMap);
+
+            var observed = await client.ObservePingAsync("client-callback", "notify-client");
+
+            Assert.Equal("echo:notify-client:count=1", observed.Result);
+            Assert.Equal(["observer:notify-client:count=1"], observed.ObservedValues);
+        }
+        finally
+        {
+            if (client is not null)
+            {
+                await client.DisposeAsync();
+            }
+
+            if (node1 is not null)
+            {
+                await node1.DisposeAsync();
+            }
+
+            if (node2 is not null)
+            {
+                await node2.DisposeAsync();
+            }
+
+            DeleteSharedStateDirectory(sharedStateDirectory);
+        }
+    }
+
     private static Dictionary<string, int> CreateEndpointMap(params string[] nodeNames)
     {
         var names = nodeNames.Length == 0
@@ -416,12 +529,18 @@ public sealed class TcpMessageTransportIntegrationTests
             params string[] seededOwners)
             => StartCoreAsync(nodeName, endpoints, membershipFile, grainDirectoryFile, seededOwners);
 
+        public static Task<WorkerProcess> StartClientAsync(
+            string nodeName,
+            IReadOnlyDictionary<string, int> endpoints)
+            => StartCoreAsync(nodeName, endpoints, null, null, [], role: "client");
+
         private static async Task<WorkerProcess> StartCoreAsync(
             string nodeName,
             IReadOnlyDictionary<string, int> endpoints,
             string? membershipFile,
             string? grainDirectoryFile,
-            string[] seededOwners)
+            string[] seededOwners,
+            string role = "silo")
         {
             var workerAssemblyPath = typeof(NetworkWorkerAnchor).Assembly.Location;
             var startInfo = new ProcessStartInfo("dotnet")
@@ -434,6 +553,8 @@ public sealed class TcpMessageTransportIntegrationTests
             };
 
             startInfo.ArgumentList.Add(workerAssemblyPath);
+            startInfo.ArgumentList.Add("--role");
+            startInfo.ArgumentList.Add(role);
             startInfo.ArgumentList.Add("--node-name");
             startInfo.ArgumentList.Add(nodeName);
             startInfo.ArgumentList.Add("--heartbeat-ms");
@@ -559,6 +680,29 @@ public sealed class TcpMessageTransportIntegrationTests
             }
         }
 
+        public async Task<WorkerObserveResult> ObservePingAsync(string key, string text)
+        {
+            await _commandLock.WaitAsync();
+            try
+            {
+                await WriteCommandAsync(new WorkerCommand("observe", key, text));
+                var response = await ReadControlResponseAsync();
+                return response.Type switch
+                {
+                    "observe" => JsonSerializer.Deserialize<WorkerObserveResult>(
+                            response.Result ?? throw new InvalidOperationException("Worker returned an empty observe payload."),
+                            JsonOptions)
+                        ?? throw new InvalidOperationException("Worker returned invalid observe payload."),
+                    "error" => throw new InvalidOperationException($"Worker observe failed: {response.Error}\n{_output}"),
+                    _ => throw new InvalidOperationException($"Unexpected worker response '{response.Type}'.\n{_output}")
+                };
+            }
+            finally
+            {
+                _commandLock.Release();
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -635,6 +779,8 @@ public sealed class TcpMessageTransportIntegrationTests
     }
 
     private sealed record WorkerCommand(string Type, string? Key, string? Text);
+
+    private sealed record WorkerObserveResult(string Result, IReadOnlyList<string> ObservedValues);
 
     private sealed record WorkerResponse(string Type, string? Result, string? Error);
 

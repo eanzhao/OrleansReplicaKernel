@@ -23,7 +23,8 @@ public sealed class BinarySerializationTests
             AttemptSequence: 2,
             SourceNodeName: "dev-node-1",
             Target: new GrainAddress("dev-node-2", new GrainId("echo", "binary-roundtrip"), OwnerVersion: 7),
-            Invokable: new EchoPingSlowInvokable("hello-binary", 42));
+            Invokable: new EchoPingSlowInvokable("hello-binary", 42),
+            SourceKind: InvocationSourceKind.Client);
 
         var roundTripped = serializer.Deserialize<InvocationMessage>(serializer.Serialize(message));
 
@@ -32,6 +33,7 @@ public sealed class BinarySerializationTests
         Assert.Equal(attemptId, roundTripped.AttemptId);
         Assert.Equal(2, roundTripped.AttemptSequence);
         Assert.Equal("dev-node-1", roundTripped.SourceNodeName);
+        Assert.Equal(InvocationSourceKind.Client, roundTripped.SourceKind);
         Assert.Equal(new GrainAddress("dev-node-2", new GrainId("echo", "binary-roundtrip"), 7), roundTripped.Target);
 
         var invokable = Assert.IsType<EchoPingSlowInvokable>(roundTripped.Invokable);

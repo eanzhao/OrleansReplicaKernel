@@ -21,6 +21,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
     private readonly ObjectReferenceFactoryRegistry _objectReferences;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _responseHistoryRetention;
+    private readonly InvocationSourceKind _sourceKind;
     private readonly Dictionary<Guid, CompletedRequestEntry> _completedRequests = new();
     private readonly Dictionary<Guid, Task<InvocationResponseMessage>> _inflightRequests = new();
     private readonly Dictionary<Guid, PendingResponseRegistration> _pendingResponses = new();
@@ -40,7 +41,8 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         IMessageTransport transport,
         ObjectReferenceFactoryRegistry objectReferences,
         TimeProvider? timeProvider = null,
-        TimeSpan? responseHistoryRetention = null)
+        TimeSpan? responseHistoryRetention = null,
+        InvocationSourceKind sourceKind = InvocationSourceKind.ClusterNode)
     {
         NodeName = nodeName;
         _failureDetector = failureDetector;
@@ -51,6 +53,7 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         _objectReferences = objectReferences;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _responseHistoryRetention = responseHistoryRetention ?? TimeSpan.FromMinutes(5);
+        _sourceKind = sourceKind;
     }
 
     public string NodeName { get; }
@@ -330,7 +333,8 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
             attemptSequence,
             NodeName,
             new GrainAddress(NodeName, grainId, OwnerVersion: 0),
-            invokable);
+            invokable,
+            _sourceKind);
         var routedAddress = _router.Route(message);
         var routedMessage = message with { Target = routedAddress };
 
@@ -396,14 +400,20 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         InvocationMessage message,
         CancellationToken cancellationToken)
     {
+        var routedMessage = ResolveInboundTarget(message);
+        if (routedMessage.Target.NodeName != NodeName)
+        {
+            return await ForwardAsync(routedMessage, cancellationToken);
+        }
+
         try
         {
-            var activation = _activationDirectory.GetOrCreate(message.Target);
-            var result = await activation.InvokeAsync(message, this, cancellationToken);
+            var activation = _activationDirectory.GetOrCreate(routedMessage.Target);
+            var result = await activation.InvokeAsync(routedMessage, this, cancellationToken);
             return new InvocationResponseMessage(
-                message.RequestId,
-                message.AttemptId,
-                message.AttemptSequence,
+                routedMessage.RequestId,
+                routedMessage.AttemptId,
+                routedMessage.AttemptSequence,
                 NodeName,
                 result,
                 null);
@@ -411,12 +421,71 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
         catch (Exception exception)
         {
             return new InvocationResponseMessage(
-                message.RequestId,
-                message.AttemptId,
-                message.AttemptSequence,
+                routedMessage.RequestId,
+                routedMessage.AttemptId,
+                routedMessage.AttemptSequence,
                 NodeName,
                 null,
                 exception);
+        }
+    }
+
+    private InvocationMessage ResolveInboundTarget(InvocationMessage message)
+    {
+        if (CallbackTargetIdentity.TryGetExecutionNodeName(message.Target.GrainId, out var callbackExecutionNodeName)
+            && !string.Equals(callbackExecutionNodeName, NodeName, StringComparison.Ordinal))
+        {
+            var forwardedCallback = message with
+            {
+                Target = message.Target with { NodeName = callbackExecutionNodeName }
+            };
+
+            TraceLog.Write(
+                "gateway",
+                $"forward callback {message.RequestId:N}/{message.AttemptId:N} {message.Target.GrainId} via {NodeName} -> {callbackExecutionNodeName}");
+            return forwardedCallback;
+        }
+
+        if (message.SourceKind != InvocationSourceKind.Client)
+        {
+            return message;
+        }
+
+        var routedAddress = _router.Route(message);
+        if (routedAddress.NodeName == message.Target.NodeName
+            && routedAddress.OwnerVersion == message.Target.OwnerVersion)
+        {
+            return message;
+        }
+
+        TraceLog.Write(
+            "gateway",
+            $"forward client request {message.RequestId:N}/{message.AttemptId:N} {message.Target.GrainId} via {NodeName} -> {routedAddress}");
+        return message with { Target = routedAddress };
+    }
+
+    private async ValueTask<InvocationResponseMessage> ForwardAsync(
+        InvocationMessage message,
+        CancellationToken cancellationToken)
+    {
+        var completion = RegisterPendingResponse(
+            message.RequestId,
+            message.AttemptId,
+            message.AttemptSequence);
+
+        try
+        {
+            await _transport.SendAsync(message, cancellationToken);
+            return await completion.Task.WaitAsync(cancellationToken);
+        }
+        catch
+        {
+            RemovePendingResponse(
+                message.AttemptId,
+                message.RequestId,
+                message.AttemptSequence,
+                stopWaiting: true);
+            throw;
         }
     }
 

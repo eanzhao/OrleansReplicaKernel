@@ -21,8 +21,11 @@ public sealed class TcpMessageTransport :
     private readonly BinaryMessageSerializer _messageSerializer;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _heartbeatInterval;
+    private readonly bool _acceptInboundConnections;
+    private readonly bool _allowUnknownInboundNodes;
     private readonly CancellationTokenSource _disposeCancellation = new();
     private readonly ConcurrentDictionary<string, OutboundPeerState> _outboundPeers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, TcpTransportConnection> _connectionsByRemoteNodeName = new(StringComparer.Ordinal);
     private readonly object _dispatcherLock = new();
     private readonly object _lifecycleLock = new();
     private readonly HashSet<TcpTransportConnection> _activeConnections = [];
@@ -40,7 +43,9 @@ public sealed class TcpMessageTransport :
         IClusterMembershipView membershipView,
         BinaryMessageSerializer messageSerializer,
         TimeSpan heartbeatInterval,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        bool acceptInboundConnections = true,
+        bool allowUnknownInboundNodes = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(localNodeName);
         ArgumentNullException.ThrowIfNull(localEndpoint);
@@ -60,6 +65,8 @@ public sealed class TcpMessageTransport :
         _messageSerializer = messageSerializer;
         _heartbeatInterval = heartbeatInterval;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _acceptInboundConnections = acceptInboundConnections;
+        _allowUnknownInboundNodes = allowUnknownInboundNodes;
     }
 
     public void Bind(IMessageReceiver requestReceiver, IResponseReceiver responseReceiver)
@@ -85,14 +92,22 @@ public sealed class TcpMessageTransport :
 
             EnsureBound();
 
-            _listener = new TcpListener(_localEndpoint);
-            _listener.Start();
-            _acceptLoop = Task.Run(() => AcceptLoopAsync(_disposeCancellation.Token));
             _started = true;
 
-            TraceLog.Write(
-                "transport",
-                $"start tcp listener {_localNodeName} on {_localEndpoint.Address}:{_localEndpoint.Port}");
+            if (_acceptInboundConnections)
+            {
+                _listener = new TcpListener(_localEndpoint);
+                _listener.Start();
+                _acceptLoop = Task.Run(() => AcceptLoopAsync(_disposeCancellation.Token));
+
+                TraceLog.Write(
+                    "transport",
+                    $"start tcp listener {_localNodeName} on {_localEndpoint.Address}:{_localEndpoint.Port}");
+            }
+            else
+            {
+                TraceLog.Write("transport", $"start tcp client session manager {_localNodeName}");
+            }
         }
     }
 
@@ -100,27 +115,39 @@ public sealed class TcpMessageTransport :
         InvocationMessage message,
         CancellationToken cancellationToken = default)
     {
-        if (_membershipView.GetHealth(message.Target.NodeName) == NodeHealthStatus.Unhealthy)
-        {
-            throw new RemoteNodeUnavailableException(message.Target.NodeName);
-        }
-
-        if (!_peerEndpoints.TryGetValue(message.Target.NodeName, out var endpoint))
-        {
-            throw new RemoteNodeUnavailableException(message.Target.NodeName);
-        }
-
         TcpTransportConnection connection;
-        try
+
+        if (TryGetLiveConnection(message.Target.NodeName, out connection))
         {
-            connection = await GetOrConnectAsync(message.Target.NodeName, endpoint, cancellationToken);
+            if (_peerEndpoints.ContainsKey(message.Target.NodeName)
+                && _membershipView.GetHealth(message.Target.NodeName) == NodeHealthStatus.Unhealthy)
+            {
+                throw new RemoteNodeUnavailableException(message.Target.NodeName);
+            }
         }
-        catch (Exception exception) when (IsNetworkException(exception))
+        else
         {
-            TraceLog.Write(
-                "transport",
-                $"tcp connect failed for {message.RequestId:N}/{message.AttemptId:N} to {message.Target.NodeName}: {exception.GetType().Name}");
-            throw new RemoteNodeUnavailableException(message.Target.NodeName);
+            if (_membershipView.GetHealth(message.Target.NodeName) == NodeHealthStatus.Unhealthy)
+            {
+                throw new RemoteNodeUnavailableException(message.Target.NodeName);
+            }
+
+            if (!_peerEndpoints.TryGetValue(message.Target.NodeName, out var endpoint))
+            {
+                throw new RemoteNodeUnavailableException(message.Target.NodeName);
+            }
+
+            try
+            {
+                connection = await GetOrConnectAsync(message.Target.NodeName, endpoint, cancellationToken);
+            }
+            catch (Exception exception) when (IsNetworkException(exception))
+            {
+                TraceLog.Write(
+                    "transport",
+                    $"tcp connect failed for {message.RequestId:N}/{message.AttemptId:N} to {message.Target.NodeName}: {exception.GetType().Name}");
+                throw new RemoteNodeUnavailableException(message.Target.NodeName);
+            }
         }
 
         var payload = _messageSerializer.SerializeInvocationMessage(message);
@@ -190,7 +217,28 @@ public sealed class TcpMessageTransport :
             await outboundState.DisposeAsync();
         }
 
+        _connectionsByRemoteNodeName.Clear();
+
         _disposeCancellation.Dispose();
+    }
+
+    public async ValueTask PrimeOutboundConnectionsAsync(CancellationToken cancellationToken = default)
+    {
+        foreach (var endpoint in _peerEndpoints)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                await GetOrConnectAsync(endpoint.Key, endpoint.Value, cancellationToken);
+            }
+            catch (Exception exception) when (IsNetworkException(exception))
+            {
+                TraceLog.Write(
+                    "transport",
+                    $"tcp prime failed {_localNodeName} -> {endpoint.Key}: {exception.GetType().Name}");
+            }
+        }
     }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
@@ -306,6 +354,11 @@ public sealed class TcpMessageTransport :
         {
             _activeConnections.Add(connection);
         }
+
+        if (connection.RemoteNodeName is { } remoteNodeName)
+        {
+            _connectionsByRemoteNodeName[remoteNodeName] = connection;
+        }
     }
 
     private void HandleConnectionClosed(TcpTransportConnection connection)
@@ -318,6 +371,11 @@ public sealed class TcpMessageTransport :
         if (connection.RemoteNodeName is { } remoteNodeName)
         {
             InvalidateOutboundConnection(remoteNodeName, connection);
+            if (_connectionsByRemoteNodeName.TryGetValue(remoteNodeName, out var activeConnection)
+                && ReferenceEquals(activeConnection, connection))
+            {
+                _connectionsByRemoteNodeName.TryRemove(remoteNodeName, out _);
+            }
         }
     }
 
@@ -328,6 +386,19 @@ public sealed class TcpMessageTransport :
         {
             state.Connection = null;
         }
+    }
+
+    private bool TryGetLiveConnection(string remoteNodeName, out TcpTransportConnection connection)
+    {
+        if (_connectionsByRemoteNodeName.TryGetValue(remoteNodeName, out var activeConnection)
+            && activeConnection.IsAlive)
+        {
+            connection = activeConnection;
+            return true;
+        }
+
+        connection = null!;
+        return false;
     }
 
     private async ValueTask<InvocationResponseMessage> DispatchRequestAsync(
@@ -495,7 +566,9 @@ public sealed class TcpMessageTransport :
             var remoteNodeName = reader.ReadString();
             reader.EnsureFullyConsumed();
 
-            if (_owner._peerEndpoints.Count > 0 && !_owner._peerEndpoints.ContainsKey(remoteNodeName))
+            if (!_owner._allowUnknownInboundNodes
+                && _owner._peerEndpoints.Count > 0
+                && !_owner._peerEndpoints.ContainsKey(remoteNodeName))
             {
                 throw new InvalidOperationException($"TCP hello from unexpected node '{remoteNodeName}'.");
             }

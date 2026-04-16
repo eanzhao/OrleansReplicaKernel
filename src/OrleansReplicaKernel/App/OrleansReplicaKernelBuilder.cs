@@ -2,6 +2,7 @@ using System.Net;
 using System.Reflection;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
+using OrleansReplicaKernel.Messaging;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Scheduling;
@@ -308,9 +309,7 @@ public sealed class OrleansReplicaKernelBuilder
             BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
                 grainDirectory, objectReferenceFactoryRegistry, activationDirectories, messageSerializer);
 
-        var bindings = _grainReferences.ToDictionary(
-            item => item.Key,
-            item => new OrleansReplicaKernelRegistration(item.Value.GrainType, item.Value.ReferenceFactory));
+        var bindings = BuildBindings();
 
         return new OrleansReplicaKernelHost(
             nodeName,
@@ -335,6 +334,89 @@ public sealed class OrleansReplicaKernelBuilder
                 .Concat(callbackDirectories.Values)
                 .ToArray(),
             bindings);
+    }
+
+    public OrleansReplicaKernelClient BuildClient(string nodeName, params string[] gatewayNodeNames)
+    {
+        RegisterGeneratedGrainReferences();
+        RegisterGeneratedObjectReferences();
+
+        if (!_useTcpTransport)
+        {
+            throw new InvalidOperationException("Client mode requires TCP transport.");
+        }
+
+        var gateways = gatewayNodeNames.Length == 0
+            ? _tcpNodeEndpoints.Keys.OrderBy(item => item, StringComparer.Ordinal).ToArray()
+            : gatewayNodeNames
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(item => item, StringComparer.Ordinal)
+                .ToArray();
+
+        if (gateways.Length == 0)
+        {
+            throw new InvalidOperationException("Client mode requires at least one configured gateway endpoint.");
+        }
+
+        foreach (var gatewayNodeName in gateways)
+        {
+            if (!_tcpNodeEndpoints.ContainsKey(gatewayNodeName))
+            {
+                throw new InvalidOperationException($"TCP transport endpoint for gateway '{gatewayNodeName}' is not configured.");
+            }
+        }
+
+        var messageSerializer = BuildMessageSerializer();
+        var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
+        var gatewaySelector = new RoundRobinGatewaySelector(gateways);
+        var locator = new GatewayGrainLocator(gatewaySelector);
+        var router = new LocalGrainRouter(nodeName, locator);
+        var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
+        var activationDirectory = new LocalActivationDirectory(
+            new Dictionary<string, Func<object>>(StringComparer.Ordinal),
+            new Dictionary<string, GrainTypeCollectionPolicy>(StringComparer.Ordinal),
+            callbackDirectory,
+            new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal),
+            _timeProvider);
+        var peerEndpoints = gateways.ToDictionary(
+            gatewayNodeName => gatewayNodeName,
+            gatewayNodeName => _tcpNodeEndpoints[gatewayNodeName],
+            StringComparer.Ordinal);
+        var transport = new TcpMessageTransport(
+            nodeName,
+            new IPEndPoint(IPAddress.Loopback, 0),
+            peerEndpoints,
+            new StaticClusterMembershipView(nodeName, gateways),
+            messageSerializer,
+            _tcpHeartbeatInterval,
+            _timeProvider,
+            acceptInboundConnections: false,
+            allowUnknownInboundNodes: false);
+        var runtime = new InProcessRuntime(
+            nodeName,
+            new NoOpFailureDetector(),
+            locator,
+            router,
+            activationDirectory,
+            transport,
+            objectReferenceFactoryRegistry,
+            _timeProvider,
+            _responseHistoryRetention,
+            InvocationSourceKind.Client);
+
+        transport.Bind(runtime, runtime);
+        transport.Start();
+        transport.PrimeOutboundConnectionsAsync().GetAwaiter().GetResult();
+
+        return new OrleansReplicaKernelClient(
+            nodeName,
+            _timeProvider,
+            runtime,
+            callbackDirectory,
+            objectReferenceFactoryRegistry,
+            gatewaySelector,
+            [runtime, callbackDirectory, transport],
+            BuildBindings());
     }
 
     private GrainPolicySet BuildGrainPolicies() => new(
@@ -556,6 +638,11 @@ public sealed class OrleansReplicaKernelBuilder
         return new BinaryMessageSerializer(builder.Build());
     }
 
+    private IReadOnlyDictionary<Type, OrleansReplicaKernelRegistration> BuildBindings()
+        => _grainReferences.ToDictionary(
+            item => item.Key,
+            item => new OrleansReplicaKernelRegistration(item.Value.GrainType, item.Value.ReferenceFactory));
+
     private GrainDirectoryCheckpoint? BuildSeededDirectoryCheckpoint()
     {
         if (_seededOwnerRecords.Count == 0)
@@ -627,7 +714,9 @@ public sealed class OrleansReplicaKernelBuilder
             transportMembershipView,
             messageSerializer,
             _tcpHeartbeatInterval,
-            _timeProvider);
+            _timeProvider,
+            acceptInboundConnections: true,
+            allowUnknownInboundNodes: true);
         var locator = new DirectoryGrainLocator(grainDirectory);
         var router = new LocalGrainRouter(nodeName, locator);
         var runtime = new InProcessRuntime(
@@ -644,9 +733,7 @@ public sealed class OrleansReplicaKernelBuilder
         transport.Bind(runtime, runtime);
         transport.Start();
 
-        var bindings = _grainReferences.ToDictionary(
-            item => item.Key,
-            item => new OrleansReplicaKernelRegistration(item.Value.GrainType, item.Value.ReferenceFactory));
+        var bindings = BuildBindings();
         var locators = new Dictionary<string, IGrainLocator>(StringComparer.Ordinal)
         {
             [nodeName] = locator
