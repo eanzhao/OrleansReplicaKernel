@@ -1,6 +1,6 @@
 namespace OrleansReplicaKernel.Runtime;
 
-public sealed class InProcessNodeRegistry
+public sealed class InProcessNodeRegistry : IProbeReachabilityController, ITransportFaultInjector
 {
     private readonly object _lock = new();
     private readonly Dictionary<string, NodeState> _nodes = new();

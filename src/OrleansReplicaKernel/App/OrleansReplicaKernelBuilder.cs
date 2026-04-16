@@ -1,3 +1,4 @@
+using System.Net;
 using System.Reflection;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
@@ -12,6 +13,8 @@ public sealed class OrleansReplicaKernelBuilder
 {
     private readonly List<IBinaryCodec> _binaryCodecs = [];
     private readonly HashSet<Assembly> _binaryCodecAssemblies = [];
+    private readonly List<GrainOwnerRecord> _seededOwnerRecords = [];
+    private readonly Dictionary<string, IPEndPoint> _tcpNodeEndpoints = new(StringComparer.Ordinal);
     private readonly Dictionary<string, GrainImplementationRegistration> _grainImplementations = new(StringComparer.Ordinal);
     private readonly Dictionary<Type, GrainReferenceRegistration> _grainReferences = new();
     private readonly Dictionary<Type, ObjectReferenceRegistration> _objectReferenceRegistrations = new();
@@ -21,7 +24,9 @@ public sealed class OrleansReplicaKernelBuilder
     private TimeSpan _membershipStabilizationWindow = TimeSpan.FromMilliseconds(200);
     private int _membershipGossipFanout = 1;
     private int _membershipAntiEntropyInterval = 4;
+    private TimeSpan _tcpHeartbeatInterval = TimeSpan.FromMilliseconds(250);
     private TimeProvider _timeProvider = TimeProvider.System;
+    private bool _useTcpTransport;
     private TimeSpan _responseHistoryRetention = TimeSpan.FromMinutes(5);
     private OrleansReplicaKernelMembershipCheckpoint? _membershipCheckpoint;
     private OrleansReplicaKernelRuntimeCheckpoint? _runtimeCheckpoint;
@@ -122,6 +127,51 @@ public sealed class OrleansReplicaKernelBuilder
         return this;
     }
 
+    public OrleansReplicaKernelBuilder SeedGrainOwner(
+        string grainType,
+        string key,
+        string ownerNodeName,
+        long version = 1)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(grainType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerNodeName);
+
+        if (version <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(version), "Seeded grain owner version must be positive.");
+        }
+
+        _seededOwnerRecords.Add(new GrainOwnerRecord(new GrainId(grainType, key), ownerNodeName, version));
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseTcpTransport()
+    {
+        _useTcpTransport = true;
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder WithTcpHeartbeatInterval(TimeSpan heartbeatInterval)
+    {
+        if (heartbeatInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(heartbeatInterval), "TCP heartbeat interval must be positive.");
+        }
+
+        _tcpHeartbeatInterval = heartbeatInterval;
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder WithTcpNodeEndpoint(string nodeName, IPEndPoint endpoint)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(nodeName);
+        ArgumentNullException.ThrowIfNull(endpoint);
+
+        _tcpNodeEndpoints[nodeName] = endpoint;
+        return this;
+    }
+
     public OrleansReplicaKernelBuilder WithMembershipStabilizationWindow(TimeSpan stabilizationWindow)
     {
         if (stabilizationWindow < TimeSpan.Zero)
@@ -207,13 +257,27 @@ public sealed class OrleansReplicaKernelBuilder
         var messageSerializer = BuildMessageSerializer();
         var allNodeNames = ResolveNodeNames(nodeName, peerNodeNames);
         var (membership, membershipViews, membershipGossiper) = BuildMembership(allNodeNames);
-        var nodeRegistry = new InProcessNodeRegistry();
         var failureDetector = new ConsecutiveFailureDetector(membership);
+        var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
+        if (_useTcpTransport)
+        {
+            return BuildTcpHost(
+                nodeName,
+                allNodeNames,
+                grainPolicies,
+                membership,
+                membershipViews,
+                membershipGossiper,
+                failureDetector,
+                objectReferenceFactoryRegistry,
+                messageSerializer);
+        }
+
+        var nodeRegistry = new InProcessNodeRegistry();
         var activationDirectories = new Dictionary<string, IActivationDirectory>(StringComparer.Ordinal);
         var (grainDirectory, loadProvider, rebalancingPolicy) =
             BuildDirectory(nodeName, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
         var probeService = new InProcessClusterProbeService(nodeName, membership, nodeRegistry, failureDetector);
-        var objectReferenceFactoryRegistry = BuildObjectReferenceFactoryRegistry();
         var (locators, callbackDirectories, runtimes) =
             BuildNodeRuntimes(allNodeNames, grainPolicies, membershipViews, nodeRegistry, failureDetector,
                 grainDirectory, objectReferenceFactoryRegistry, activationDirectories, messageSerializer);
@@ -233,6 +297,7 @@ public sealed class OrleansReplicaKernelBuilder
             rebalancingPolicy,
             nodeRegistry,
             probeService,
+            nodeRegistry,
             membershipGossiper,
             membershipViews,
             locators,
@@ -344,11 +409,11 @@ public sealed class OrleansReplicaKernelBuilder
         var placementPolicy = new LeastLoadedPlacementPolicy(nodeName);
         var relocationPolicy = new HealthyNodeRelocationPolicy(nodeName);
         var rebalancingPolicy = new LoadSkewRebalancingPolicy(minimumSkew: 1);
-
-        var directory = _runtimeCheckpoint is null
+        var checkpoint = _runtimeCheckpoint?.GrainDirectory ?? BuildSeededDirectoryCheckpoint();
+        var directory = checkpoint is null
             ? new InMemoryGrainDirectory(membershipView, placementPolicy, loadProvider, relocationPolicy, placementHints)
             : InMemoryGrainDirectory.Restore(membershipView, placementPolicy, loadProvider, relocationPolicy,
-                _runtimeCheckpoint.GrainDirectory, placementHints);
+                checkpoint, placementHints);
 
         return (directory, loadProvider, rebalancingPolicy);
     }
@@ -374,6 +439,133 @@ public sealed class OrleansReplicaKernelBuilder
         }
 
         return new BinaryMessageSerializer(builder.Build());
+    }
+
+    private GrainDirectoryCheckpoint? BuildSeededDirectoryCheckpoint()
+    {
+        if (_seededOwnerRecords.Count == 0)
+        {
+            return null;
+        }
+
+        return new GrainDirectoryCheckpoint(
+            _seededOwnerRecords
+                .Distinct()
+                .OrderBy(item => item.GrainId.ToString(), StringComparer.Ordinal)
+                .ToArray());
+    }
+
+    private OrleansReplicaKernelHost BuildTcpHost(
+        string nodeName,
+        string[] allNodeNames,
+        GrainPolicySet grainPolicies,
+        InProcessClusterMembership membership,
+        Dictionary<string, GossipedClusterMembershipView> membershipViews,
+        InProcessMembershipGossiper membershipGossiper,
+        IFailureDetector failureDetector,
+        ObjectReferenceFactoryRegistry objectReferenceFactoryRegistry,
+        BinaryMessageSerializer messageSerializer)
+    {
+        if (!_tcpNodeEndpoints.TryGetValue(nodeName, out var localEndpoint))
+        {
+            throw new InvalidOperationException($"TCP transport endpoint for '{nodeName}' is not configured.");
+        }
+
+        foreach (var currentNodeName in allNodeNames)
+        {
+            if (!_tcpNodeEndpoints.ContainsKey(currentNodeName))
+            {
+                throw new InvalidOperationException($"TCP transport endpoint for '{currentNodeName}' is not configured.");
+            }
+        }
+
+        var activationDirectories = new Dictionary<string, IActivationDirectory>(StringComparer.Ordinal);
+        var (grainDirectory, loadProvider, rebalancingPolicy) =
+            BuildDirectory(nodeName, membershipViews[nodeName], grainPolicies.PlacementHints, activationDirectories);
+        var callbackDirectory = new LocalCallbackDirectory(_timeProvider);
+        var activationCheckpoint = _runtimeCheckpoint?.ActivationDirectories
+            .FirstOrDefault(item => string.Equals(item.NodeName, nodeName, StringComparison.Ordinal));
+        var activationDirectory = activationCheckpoint is null
+            ? new LocalActivationDirectory(
+                grainPolicies.Factories,
+                grainPolicies.CollectionPolicies,
+                callbackDirectory,
+                grainPolicies.SchedulingPolicies,
+                _timeProvider)
+            : LocalActivationDirectory.Restore(
+                grainPolicies.Factories,
+                grainPolicies.CollectionPolicies,
+                callbackDirectory,
+                grainPolicies.SchedulingPolicies,
+                _timeProvider,
+                activationCheckpoint);
+        activationDirectories.Add(nodeName, activationDirectory);
+
+        var peerEndpoints = _tcpNodeEndpoints
+            .Where(item => !string.Equals(item.Key, nodeName, StringComparison.Ordinal))
+            .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+        var transport = new TcpMessageTransport(
+            nodeName,
+            localEndpoint,
+            peerEndpoints,
+            membershipViews[nodeName],
+            messageSerializer,
+            _tcpHeartbeatInterval,
+            _timeProvider);
+        var locator = new DirectoryGrainLocator(grainDirectory);
+        var router = new LocalGrainRouter(nodeName, locator);
+        var runtime = new InProcessRuntime(
+            nodeName,
+            failureDetector,
+            locator,
+            router,
+            activationDirectory,
+            transport,
+            objectReferenceFactoryRegistry,
+            _timeProvider,
+            _responseHistoryRetention);
+
+        transport.Bind(runtime, runtime);
+        transport.Start();
+
+        var bindings = _grainReferences.ToDictionary(
+            item => item.Key,
+            item => new OrleansReplicaKernelRegistration(item.Value.GrainType, item.Value.ReferenceFactory));
+        var locators = new Dictionary<string, IGrainLocator>(StringComparer.Ordinal)
+        {
+            [nodeName] = locator
+        };
+        var callbackDirectories = new Dictionary<string, LocalCallbackDirectory>(StringComparer.Ordinal)
+        {
+            [nodeName] = callbackDirectory
+        };
+        var runtimes = new Dictionary<string, InProcessRuntime>(StringComparer.Ordinal)
+        {
+            [nodeName] = runtime
+        };
+        var probeService = new TcpClusterProbeService(nodeName, membership, _tcpNodeEndpoints, failureDetector);
+
+        return new OrleansReplicaKernelHost(
+            nodeName,
+            _timeProvider,
+            runtime,
+            grainDirectory,
+            membership,
+            failureDetector,
+            loadProvider,
+            rebalancingPolicy,
+            probeReachabilityController: null,
+            probeService,
+            transportFaultInjector: null,
+            membershipGossiper,
+            membershipViews,
+            locators,
+            activationDirectories,
+            callbackDirectories,
+            objectReferenceFactoryRegistry,
+            runtimes,
+            [runtime, callbackDirectory, transport],
+            bindings);
     }
 
     private (Dictionary<string, IGrainLocator> Locators,

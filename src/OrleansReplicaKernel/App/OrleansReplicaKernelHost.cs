@@ -13,9 +13,10 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
     private readonly IClusterMembership _membership;
     private readonly IFailureDetector _failureDetector;
     private readonly IPlacementLoadProvider _placementLoadProvider;
+    private readonly IProbeReachabilityController? _probeReachabilityController;
     private readonly IRebalancingPolicy _rebalancingPolicy;
-    private readonly InProcessNodeRegistry _nodeRegistry;
     private readonly IClusterProbeService _probeService;
+    private readonly ITransportFaultInjector? _transportFaultInjector;
     private readonly IMembershipGossiper _membershipGossiper;
     private readonly IReadOnlyDictionary<string, GossipedClusterMembershipView> _membershipViews;
     private readonly IReadOnlyDictionary<string, IGrainLocator> _locators;
@@ -35,8 +36,9 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         IFailureDetector failureDetector,
         IPlacementLoadProvider placementLoadProvider,
         IRebalancingPolicy rebalancingPolicy,
-        InProcessNodeRegistry nodeRegistry,
+        IProbeReachabilityController? probeReachabilityController,
         IClusterProbeService probeService,
+        ITransportFaultInjector? transportFaultInjector,
         IMembershipGossiper membershipGossiper,
         IReadOnlyDictionary<string, GossipedClusterMembershipView> membershipViews,
         IReadOnlyDictionary<string, IGrainLocator> locators,
@@ -54,9 +56,10 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
         _membership = membership;
         _failureDetector = failureDetector;
         _placementLoadProvider = placementLoadProvider;
+        _probeReachabilityController = probeReachabilityController;
         _rebalancingPolicy = rebalancingPolicy;
-        _nodeRegistry = nodeRegistry;
         _probeService = probeService;
+        _transportFaultInjector = transportFaultInjector;
         _membershipGossiper = membershipGossiper;
         _membershipViews = membershipViews;
         _locators = locators;
@@ -270,13 +273,23 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
 
     public void SetProbeReachable(string nodeName, bool isReachable)
     {
-        _nodeRegistry.SetProbeReachable(nodeName, isReachable);
+        if (_probeReachabilityController is null)
+        {
+            throw new InvalidOperationException("Current host transport does not support probe reachability injection.");
+        }
+
+        _probeReachabilityController.SetProbeReachable(nodeName, isReachable);
         TraceLog.Write("app", $"set probe reachability {nodeName} -> {isReachable}");
     }
 
     public void FailNextProbe(string nodeName, string reason)
     {
-        _nodeRegistry.FailNextProbe(nodeName, reason);
+        if (_probeReachabilityController is null)
+        {
+            throw new InvalidOperationException("Current host transport does not support injected probe failures.");
+        }
+
+        _probeReachabilityController.FailNextProbe(nodeName, reason);
         TraceLog.Write("app", $"fail next probe on {nodeName}: {reason}");
     }
 
@@ -412,31 +425,56 @@ public sealed class OrleansReplicaKernelHost : IAsyncDisposable
 
     public void DelayNextRequest(string nodeName, TimeSpan delay)
     {
-        _nodeRegistry.DelayNextRequest(nodeName, delay);
+        if (_transportFaultInjector is null)
+        {
+            throw new InvalidOperationException("Current host transport does not support request delay injection.");
+        }
+
+        _transportFaultInjector.DelayNextRequest(nodeName, delay);
         TraceLog.Write("app", $"delay next request on {nodeName} by {delay}");
     }
 
     public void FailNextRequestWithResponse(string nodeName, string failureMessage)
     {
-        _nodeRegistry.FailNextRequestWithResponse(nodeName, new InvalidOperationException(failureMessage));
+        if (_transportFaultInjector is null)
+        {
+            throw new InvalidOperationException("Current host transport does not support injected failure responses.");
+        }
+
+        _transportFaultInjector.FailNextRequestWithResponse(nodeName, new InvalidOperationException(failureMessage));
         TraceLog.Write("app", $"inject next response failure on {nodeName}: {failureMessage}");
     }
 
     public void DropNextResponse(string nodeName, string reason)
     {
-        _nodeRegistry.DropNextResponse(nodeName, reason);
+        if (_transportFaultInjector is null)
+        {
+            throw new InvalidOperationException("Current host transport does not support response drop injection.");
+        }
+
+        _transportFaultInjector.DropNextResponse(nodeName, reason);
         TraceLog.Write("app", $"drop next response on {nodeName}: {reason}");
     }
 
     public void DropNextResponseAndReplayLater(string nodeName, TimeSpan delay, string reason)
     {
-        _nodeRegistry.DropNextResponseAndReplayLater(nodeName, delay, reason);
+        if (_transportFaultInjector is null)
+        {
+            throw new InvalidOperationException("Current host transport does not support response replay injection.");
+        }
+
+        _transportFaultInjector.DropNextResponseAndReplayLater(nodeName, delay, reason);
         TraceLog.Write("app", $"drop next response on {nodeName}, then replay after {delay}: {reason}");
     }
 
     public void DuplicateNextResponse(string nodeName, TimeSpan delay)
     {
-        _nodeRegistry.DuplicateNextResponse(nodeName, delay);
+        if (_transportFaultInjector is null)
+        {
+            throw new InvalidOperationException("Current host transport does not support response duplication injection.");
+        }
+
+        _transportFaultInjector.DuplicateNextResponse(nodeName, delay);
         TraceLog.Write("app", $"duplicate next response on {nodeName} after {delay}");
     }
 

@@ -96,7 +96,7 @@ Response 回传（去重 / 超时丢弃 / Stale 过滤）→ 返回结果
 | **调度** | 单 Activation 串行 Turn；方法级 Interleaving；Request-Chain Reentrancy；统一时间源开始进入 grain 执行体 |
 | **目录** | Grain Directory + Locator + Owner 迁移 + 缓存失效 + 版本化 Fencing |
 | **放置** | Least-Loaded 初始放置；Prefer-Local 提示；负载倾斜再均衡 |
-| **传输** | 同进程多节点模拟；支持延迟/丢包/重放/重复注入；注入延迟与 retry backoff 开始统一到 TimeProvider |
+| **传输** | 同进程多节点模拟；TCP 跨进程传输原型（长度前缀帧、请求/响应回路、连接复用、心跳、断连后重连）；保留延迟/丢包/重放/重复注入用于 in-process 测试；注入延迟与 retry backoff 开始统一到 TimeProvider |
 | **Membership** | Probe → 故障检测 → 权威视图 → Gossip（fanout + 反熵）→ 稳定化；View Change 时间戳开始统一到 TimeProvider |
 | **Handoff** | Warm Handoff capture/apply；Quiescence/Drain；失败自动退回 Cold Path；capture 时间开始有受控验证 |
 | **回调** | Observer 模式；跨节点回调；Object Reference Rehydrate |
@@ -111,7 +111,6 @@ Response 回传（去重 / 超时丢弃 / Stale 过滤）→ 返回结果
 
 > 注意：这些都是**计划做但还没做到**的，不是"不打算做"。
 
-- 跨进程/跨机器网络传输
 - Membership 存储后端 / 持久化传播
 - 分布式 Grain Directory（多副本、一致性协议）
 - State Storage Provider / Persistent State / 事务
