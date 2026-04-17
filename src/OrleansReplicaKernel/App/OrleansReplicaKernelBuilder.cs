@@ -426,6 +426,34 @@ public sealed class OrleansReplicaKernelBuilder
         return this;
     }
 
+    public OrleansReplicaKernelBuilder UseInMemoryGrainStorage()
+    {
+        _defaultGrainStorage = new InMemoryGrainStorage();
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseInMemoryGrainStorage(string storageName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageName);
+        _namedGrainStorages[storageName] = new InMemoryGrainStorage();
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseAdoNetGrainStorage(Func<System.Data.Common.DbConnection> connectionFactory)
+    {
+        _defaultGrainStorage = new AdoNetGrainStorage(connectionFactory);
+        return this;
+    }
+
+    public OrleansReplicaKernelBuilder UseAdoNetGrainStorage(
+        string storageName,
+        Func<System.Data.Common.DbConnection> connectionFactory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageName);
+        _namedGrainStorages[storageName] = new AdoNetGrainStorage(connectionFactory);
+        return this;
+    }
+
     public OrleansReplicaKernelBuilder WithResponseHistoryRetention(TimeSpan retention)
     {
         if (retention < TimeSpan.Zero)

@@ -10,7 +10,24 @@
     <RootNamespace>OrleansReplicaKernel.CodeGenerator</RootNamespace>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);RS2008</NoWarn>
+
+    <IsPackable>true</IsPackable>
+    <PackageId>OrleansReplicaKernel.CodeGenerator</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>eanzhao</Authors>
+    <Description>Source generator for OrleansReplicaKernel grain references, invokables, and serialization codecs.</Description>
+    <PackageTags>orleans;source-generator;codegen</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/eanzhao/OrleansReplicaKernel</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" PrivateAssets="all" />
