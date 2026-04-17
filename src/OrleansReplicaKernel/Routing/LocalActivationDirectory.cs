@@ -24,7 +24,9 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     private readonly SystemTargetDirectory _systemTargetDirectory;
     private readonly PersistentStateFactory _persistentStateFactory;
     private readonly TransactionalStateFactory _transactionalStateFactory;
+    private readonly IReadOnlyDictionary<string, GrainTypePlacementHint> _placementHints;
     private readonly Dictionary<GrainId, ActivationEntry> _activations = new();
+    private readonly Dictionary<GrainId, StatelessWorkerPool> _statelessWorkerPools = new();
     private readonly Dictionary<GrainId, PendingHandoffState> _pendingHandoffStates = new();
     private readonly Dictionary<GrainId, ActivationMetadataRecord> _recoveredMetadata = new();
     private readonly Dictionary<GrainId, long> _fencedOwnerVersions = new();
@@ -35,7 +37,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         LocalCallbackDirectory callbackDirectory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null,
         TimeProvider? timeProvider = null,
-        SystemTargetDirectory? systemTargetDirectory = null)
+        SystemTargetDirectory? systemTargetDirectory = null,
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null)
         : this(
             "<local>",
             grainFactories,
@@ -43,7 +46,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             callbackDirectory,
             grainSchedulingPolicies,
             timeProvider,
-            systemTargetDirectory)
+            systemTargetDirectory,
+            placementHints)
     {
     }
 
@@ -54,7 +58,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         LocalCallbackDirectory callbackDirectory,
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies = null,
         TimeProvider? timeProvider = null,
-        SystemTargetDirectory? systemTargetDirectory = null)
+        SystemTargetDirectory? systemTargetDirectory = null,
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null)
         : this(
             localNodeName,
             WrapFactories(grainFactories),
@@ -65,7 +70,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             grainSchedulingPolicies,
             timeProvider,
             checkpoint: null,
-            systemTargetDirectory: systemTargetDirectory)
+            systemTargetDirectory: systemTargetDirectory,
+            placementHints: placementHints)
     {
     }
 
@@ -79,7 +85,8 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         IReadOnlyDictionary<string, GrainTypeSchedulingPolicy>? grainSchedulingPolicies,
         TimeProvider? timeProvider,
         ActivationDirectoryCheckpoint? checkpoint = null,
-        SystemTargetDirectory? systemTargetDirectory = null)
+        SystemTargetDirectory? systemTargetDirectory = null,
+        IReadOnlyDictionary<string, GrainTypePlacementHint>? placementHints = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(localNodeName);
 
@@ -91,6 +98,7 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         _transactionalStateFactory = transactionalStateFactory ?? throw new ArgumentNullException(nameof(transactionalStateFactory));
         _timeProvider = timeProvider ?? TimeProvider.System;
         _grainSchedulingPolicies = grainSchedulingPolicies ?? new Dictionary<string, GrainTypeSchedulingPolicy>(StringComparer.Ordinal);
+        _placementHints = placementHints ?? new Dictionary<string, GrainTypePlacementHint>(StringComparer.Ordinal);
         _systemTargetDirectory = systemTargetDirectory ?? new SystemTargetDirectory(localNodeName, _timeProvider);
 
         if (checkpoint is null)
@@ -109,7 +117,13 @@ public sealed class LocalActivationDirectory : IActivationDirectory
     {
         lock (_lock)
         {
-            return _activations.Count;
+            var statelessWorkerCount = 0;
+            foreach (var pool in _statelessWorkerPools.Values)
+            {
+                statelessWorkerCount += pool.Count;
+            }
+
+            return _activations.Count + statelessWorkerCount;
         }
     }
 
@@ -141,6 +155,11 @@ public sealed class LocalActivationDirectory : IActivationDirectory
                     address.NodeName,
                     address.OwnerVersion,
                     _fencedOwnerVersions[address.GrainId]);
+            }
+
+            if (IsStatelessWorker(address.GrainId.GrainType))
+            {
+                return GetOrCreateStatelessWorker(address);
             }
 
             if (_activations.TryGetValue(address.GrainId, out var existing))
@@ -420,6 +439,13 @@ public sealed class LocalActivationDirectory : IActivationDirectory
         {
             activations = _activations.Values.ToList();
             _activations.Clear();
+
+            foreach (var pool in _statelessWorkerPools.Values)
+            {
+                activations.AddRange(pool.GetAll());
+            }
+
+            _statelessWorkerPools.Clear();
         }
 
         foreach (var activation in activations)
@@ -563,6 +589,54 @@ public sealed class LocalActivationDirectory : IActivationDirectory
             item => new Func<GrainActivationContext, object>(_ => item.Value()),
             StringComparer.Ordinal);
 
+    private bool IsStatelessWorker(string grainType)
+        => _placementHints.TryGetValue(grainType, out var hint) && hint.IsStatelessWorker;
+
+    private int GetMaxLocalWorkers(string grainType)
+        => _placementHints.TryGetValue(grainType, out var hint) && hint.MaxLocalWorkers > 0
+            ? hint.MaxLocalWorkers
+            : Environment.ProcessorCount;
+
+    private ActivationEntry GetOrCreateStatelessWorker(GrainAddress address)
+    {
+        if (!_statelessWorkerPools.TryGetValue(address.GrainId, out var pool))
+        {
+            pool = new StatelessWorkerPool(GetMaxLocalWorkers(address.GrainId.GrainType));
+            _statelessWorkerPools[address.GrainId] = pool;
+        }
+
+        var selected = pool.SelectOrCreate(() => CreateWorkerActivation(address));
+        return selected;
+    }
+
+    private ActivationEntry CreateWorkerActivation(GrainAddress address)
+    {
+        if (!_grainFactories.TryGetValue(address.GrainId.GrainType, out var grainFactory))
+        {
+            throw new InvalidOperationException(
+                $"No activator registered for grain type '{address.GrainId.GrainType}'.");
+        }
+
+        var activationContext = new GrainActivationContext(
+            address.GrainId,
+            _persistentStateFactory,
+            _transactionalStateFactory);
+        var instance = grainFactory(activationContext);
+
+        var created = new ActivationEntry(
+            address.GrainId,
+            instance,
+            address.OwnerVersion,
+            ResolveSchedulingPolicy(address.GrainId.GrainType),
+            _timeProvider,
+            activationContext);
+
+        _fencedOwnerVersions[address.GrainId] = address.OwnerVersion;
+        OrleansReplicaKernelTelemetry.RecordActivationDelta(1, address.GrainId, _localNodeName);
+        TraceLog.Write("directory", $"create stateless worker activation {address.GrainId} on {address.NodeName} (pool)");
+        return created;
+    }
+
     private static void DisposeFailedActivation(object instance)
     {
         switch (instance)
@@ -574,5 +648,44 @@ public sealed class LocalActivationDirectory : IActivationDirectory
                 disposable.Dispose();
                 break;
         }
+    }
+
+    internal sealed class StatelessWorkerPool
+    {
+        private readonly List<ActivationEntry> _workers = new();
+        private int _roundRobinIndex;
+
+        public StatelessWorkerPool(int maxWorkers)
+        {
+            MaxWorkers = maxWorkers;
+        }
+
+        public int MaxWorkers { get; }
+
+        public int Count => _workers.Count;
+
+        public ActivationEntry SelectOrCreate(Func<ActivationEntry> factory)
+        {
+            if (_workers.Count > 0)
+            {
+                var selected = _workers[_roundRobinIndex % _workers.Count];
+                _roundRobinIndex = (_roundRobinIndex + 1) % _workers.Count;
+
+                if (_workers.Count < MaxWorkers)
+                {
+                    var created = factory();
+                    _workers.Add(created);
+                    return created;
+                }
+
+                return selected;
+            }
+
+            var first = factory();
+            _workers.Add(first);
+            return first;
+        }
+
+        public IReadOnlyList<ActivationEntry> GetAll() => _workers;
     }
 }

@@ -10,7 +10,6 @@ public sealed class DirectoryGrainLocator : IGrainLocator
     private readonly IGrainDirectory _grainDirectory;
     private readonly ClusterGrainInterfaceVersionManifest? _grainInterfaceVersions;
     private readonly Dictionary<GrainId, GrainOwnerRecord> _cache = new();
-    private long _observedInvalidationVersion = -1;
 
     public DirectoryGrainLocator(
         IGrainDirectory grainDirectory,
@@ -22,56 +21,45 @@ public sealed class DirectoryGrainLocator : IGrainLocator
 
     public GrainAddress Locate(GrainId grainId, GrainInterfaceVersionDescriptor? requestedInterface = null)
     {
-        GrainOwnerRecord record;
-        long observedInvalidationVersion;
+        GrainOwnerRecord cachedRecord = default;
         var hasCachedRecord = false;
 
         lock (_lock)
         {
-            hasCachedRecord = _cache.TryGetValue(grainId, out record);
-            observedInvalidationVersion = _observedInvalidationVersion;
+            hasCachedRecord = _cache.TryGetValue(grainId, out cachedRecord);
+        }
+
+        if (hasCachedRecord && IsCompatible(cachedRecord.OwnerNodeName, requestedInterface))
+        {
+            var currentRecordVersion = _grainDirectory.GetRecordVersion(grainId);
+            if (currentRecordVersion == cachedRecord.Version)
+            {
+                TraceLog.Write(
+                    "locator",
+                    $"cache hit {grainId} -> {cachedRecord.OwnerNodeName} v{cachedRecord.Version}");
+                return new GrainAddress(cachedRecord.OwnerNodeName, grainId, cachedRecord.Version);
+            }
+        }
+
+        var refreshedRecord = _grainDirectory.Resolve(grainId, requestedInterface);
+
+        lock (_lock)
+        {
+            _cache[grainId] = refreshedRecord;
         }
 
         if (hasCachedRecord)
         {
-            var currentInvalidationVersion = _grainDirectory.GetInvalidationVersion();
-            if (currentInvalidationVersion == observedInvalidationVersion
-                && IsCompatible(record.OwnerNodeName, requestedInterface))
-            {
-                TraceLog.Write(
-                    "locator",
-                    $"cache hit {grainId} -> {record.OwnerNodeName} v{record.Version}");
-                return new GrainAddress(record.OwnerNodeName, grainId, record.Version);
-            }
-
-            var refreshedRecord = _grainDirectory.Resolve(grainId, requestedInterface);
-            var refreshedInvalidationVersion = _grainDirectory.GetInvalidationVersion();
-
-            lock (_lock)
-            {
-                _cache[grainId] = refreshedRecord;
-                _observedInvalidationVersion = refreshedInvalidationVersion;
-            }
-
             TraceLog.Write(
                 "locator",
-                $"refresh cached address for {grainId} -> {refreshedRecord.OwnerNodeName} v{refreshedRecord.Version} after directory version {observedInvalidationVersion} -> {refreshedInvalidationVersion}");
+                $"refresh cached address for {grainId} -> {refreshedRecord.OwnerNodeName} v{refreshedRecord.Version} after cached owner version {cachedRecord.Version}");
             return new GrainAddress(refreshedRecord.OwnerNodeName, grainId, refreshedRecord.Version);
-        }
-
-        record = _grainDirectory.Resolve(grainId, requestedInterface);
-        var invalidationVersion = _grainDirectory.GetInvalidationVersion();
-
-        lock (_lock)
-        {
-            _cache[grainId] = record;
-            _observedInvalidationVersion = invalidationVersion;
         }
 
         TraceLog.Write(
             "locator",
-            $"cache miss {grainId} -> {record.OwnerNodeName} v{record.Version}");
-        return new GrainAddress(record.OwnerNodeName, grainId, record.Version);
+            $"cache miss {grainId} -> {refreshedRecord.OwnerNodeName} v{refreshedRecord.Version}");
+        return new GrainAddress(refreshedRecord.OwnerNodeName, grainId, refreshedRecord.Version);
     }
 
     public void Invalidate(GrainId grainId)

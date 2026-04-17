@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using OrleansReplicaKernel.CodeGeneration;
 using OrleansReplicaKernel.Diagnostics;
 using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Invocation;
@@ -61,6 +62,7 @@ public sealed class OrleansReplicaKernelBuilder
         where TContract : class
         where TGrain : class
     {
+        var statelessWorker = ResolveStatelessWorker(typeof(TGrain));
         AddGrainImplementation(
             grainType,
             _ => grainFactory(),
@@ -69,6 +71,8 @@ public sealed class OrleansReplicaKernelBuilder
             interleavableMethods: null,
             isReentrant: false,
             mayInterleavePredicateMethodName: null,
+            isStatelessWorker: statelessWorker.IsEnabled,
+            maxLocalWorkers: statelessWorker.MaxLocalWorkers,
             isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
@@ -88,6 +92,7 @@ public sealed class OrleansReplicaKernelBuilder
         Func<TGrain> grainFactory)
         where TGrain : class
     {
+        var statelessWorker = ResolveStatelessWorker(typeof(TGrain));
         AddGrainImplementation(
             grainType,
             _ => grainFactory(),
@@ -96,6 +101,8 @@ public sealed class OrleansReplicaKernelBuilder
             interleavableMethods: null,
             isReentrant: false,
             mayInterleavePredicateMethodName: null,
+            isStatelessWorker: statelessWorker.IsEnabled,
+            maxLocalWorkers: statelessWorker.MaxLocalWorkers,
             isGenerated: false,
             replaceExisting: false,
             sourceDescription: $"manual grain implementation for '{grainType}'");
@@ -661,7 +668,13 @@ public sealed class OrleansReplicaKernelBuilder
         _grainImplementations.Values.ToDictionary(
             item => item.GrainType, item => new GrainTypeCollectionPolicy(item.CollectionAgeLimit), StringComparer.Ordinal),
         _grainImplementations.Values.ToDictionary(
-            item => item.GrainType, item => new GrainTypePlacementHint(item.PreferLocalPlacement), StringComparer.Ordinal),
+            item => item.GrainType,
+            item => new GrainTypePlacementHint(item.PreferLocalPlacement)
+            {
+                IsStatelessWorker = item.IsStatelessWorker,
+                MaxLocalWorkers = item.MaxLocalWorkers,
+            },
+            StringComparer.Ordinal),
         _grainImplementations.Values.ToDictionary(
             item => item.GrainType, item => new GrainTypeSchedulingPolicy(
                 item.InterleavableMethods, item.IsReentrant, item.MayInterleavePredicateMethodName), StringComparer.Ordinal));
@@ -1349,6 +1362,10 @@ public sealed class OrleansReplicaKernelBuilder
                         attribute.InterleavableMethods,
                         attribute.IsReentrant,
                         attribute.MayInterleavePredicateMethodName,
+                        attribute.IsStatelessWorker,
+                        attribute.IsStatelessWorker
+                            ? ResolveMaxLocalWorkers(attribute.MaxLocalWorkers)
+                            : 0,
                         isGenerated: true,
                         replaceExisting: false,
                         sourceDescription:
@@ -1451,6 +1468,8 @@ public sealed class OrleansReplicaKernelBuilder
         IReadOnlyCollection<string>? interleavableMethods,
         bool isReentrant,
         string? mayInterleavePredicateMethodName,
+        bool isStatelessWorker,
+        int maxLocalWorkers,
         bool isGenerated,
         bool replaceExisting,
         string sourceDescription)
@@ -1462,6 +1481,7 @@ public sealed class OrleansReplicaKernelBuilder
         var registration = new GrainImplementationRegistration(
             grainType, grainFactory, collectionAgeLimit, preferLocalPlacement,
             normalizedMethods, isReentrant, mayInterleavePredicateMethodName,
+            isStatelessWorker, maxLocalWorkers,
             isGenerated, sourceDescription);
         AddRegistration(
             _grainImplementations, grainType, registration, replaceExisting,
@@ -1715,6 +1735,27 @@ public sealed class OrleansReplicaKernelBuilder
             : null;
     }
 
+    private static StatelessWorkerRegistration ResolveStatelessWorker(Type implementationType)
+    {
+        var attribute = implementationType.GetCustomAttribute<StatelessWorkerAttribute>();
+        return attribute is null
+            ? new StatelessWorkerRegistration(IsEnabled: false, MaxLocalWorkers: 0)
+            : new StatelessWorkerRegistration(IsEnabled: true, MaxLocalWorkers: attribute.MaxLocalWorkers);
+    }
+
+    private static int ResolveMaxLocalWorkers(int configuredValue)
+    {
+        if (configuredValue < 0)
+        {
+            throw new InvalidOperationException(
+                $"Generated grain implementation declares an invalid stateless worker limit '{configuredValue}'.");
+        }
+
+        return configuredValue > 0
+            ? configuredValue
+            : Environment.ProcessorCount;
+    }
+
     private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
     {
         try
@@ -1733,6 +1774,10 @@ public sealed class OrleansReplicaKernelBuilder
         string SourceDescription { get; }
     }
 
+    private readonly record struct StatelessWorkerRegistration(
+        bool IsEnabled,
+        int MaxLocalWorkers);
+
     private sealed record GrainImplementationRegistration(
         string GrainType,
         Func<GrainActivationContext, object> GrainFactory,
@@ -1741,6 +1786,8 @@ public sealed class OrleansReplicaKernelBuilder
         IReadOnlyList<string> InterleavableMethods,
         bool IsReentrant,
         string? MayInterleavePredicateMethodName,
+        bool IsStatelessWorker,
+        int MaxLocalWorkers,
         bool IsGenerated,
         string SourceDescription) : IRegistrationEntry;
 

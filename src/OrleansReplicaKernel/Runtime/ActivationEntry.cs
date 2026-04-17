@@ -26,10 +26,13 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
     private readonly object _activationLock = new();
     private readonly object _quiesceLock = new();
     private readonly object _timerLock = new();
+    private readonly object _extensionLock = new();
     private readonly TimeProvider _timeProvider;
     private readonly ActivationScheduler _scheduler;
     private readonly GrainTypeSchedulingPolicy _schedulingPolicy;
     private readonly Dictionary<Guid, ActivationTimerRegistration> _timers = new();
+    private readonly Dictionary<string, IGrainExtension> _extensions = new(StringComparer.Ordinal);
+    private readonly IReadOnlyList<IIncomingGrainCallFilter> _siloFilters;
     private long _lastTouchedUtcTicks;
     private int _lifecycleState;
     private int _activationState;
@@ -44,8 +47,9 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         object instance,
         long ownerVersion,
         GrainTypeSchedulingPolicy schedulingPolicy,
-        TimeProvider timeProvider)
-        : this(grainId, instance, timeProvider.GetUtcNow(), ownerVersion, schedulingPolicy, timeProvider, false)
+        TimeProvider timeProvider,
+        IReadOnlyList<IIncomingGrainCallFilter>? siloFilters = null)
+        : this(grainId, instance, timeProvider.GetUtcNow(), ownerVersion, schedulingPolicy, timeProvider, false, siloFilters)
     {
     }
 
@@ -55,7 +59,8 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         long ownerVersion,
         GrainTypeSchedulingPolicy schedulingPolicy,
         TimeProvider timeProvider,
-        GrainActivationContext? activationContext)
+        GrainActivationContext? activationContext,
+        IReadOnlyList<IIncomingGrainCallFilter>? siloFilters = null)
         : this(
             grainId,
             instance,
@@ -63,7 +68,8 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
             ownerVersion,
             schedulingPolicy,
             timeProvider,
-            isRecovered: false)
+            isRecovered: false,
+            siloFilters)
     {
         _activationContext = activationContext;
     }
@@ -75,13 +81,15 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         long ownerVersion,
         GrainTypeSchedulingPolicy schedulingPolicy,
         TimeProvider timeProvider,
-        bool isRecovered)
+        bool isRecovered,
+        IReadOnlyList<IIncomingGrainCallFilter>? siloFilters = null)
     {
         GrainId = grainId;
         OwnerVersion = ownerVersion;
         _instance = instance;
         _timeProvider = timeProvider;
         _schedulingPolicy = schedulingPolicy;
+        _siloFilters = siloFilters ?? [];
         _scheduler = new ActivationScheduler(grainId.ToString());
         _lastTouchedUtcTicks = lastTouchedUtc.UtcTicks;
 
@@ -99,6 +107,47 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
     public string InstanceTypeName => _instance.GetType().Name;
 
     public DateTimeOffset LastTouchedUtc => new(Interlocked.Read(ref _lastTouchedUtcTicks), TimeSpan.Zero);
+
+    public void RegisterExtension<TExtensionInterface>(IGrainExtension extension)
+        where TExtensionInterface : class
+        => RegisterExtension(typeof(TExtensionInterface), extension);
+
+    public void RegisterExtension(Type interfaceType, IGrainExtension extension)
+    {
+        ArgumentNullException.ThrowIfNull(interfaceType);
+        ArgumentNullException.ThrowIfNull(extension);
+
+        if (!interfaceType.IsInterface)
+        {
+            throw new ArgumentException(
+                $"Extension contract '{interfaceType.FullName ?? interfaceType.Name}' must be an interface.",
+                nameof(interfaceType));
+        }
+
+        if (!interfaceType.IsInstanceOfType(extension))
+        {
+            throw new ArgumentException(
+                $"Extension '{extension.GetType().FullName}' does not implement '{interfaceType.FullName ?? interfaceType.Name}'.",
+                nameof(extension));
+        }
+
+        if (extension is IGrainExtensionContextAware contextAware)
+        {
+            contextAware.SetGrainExtensionContext(
+                _activationContext
+                ?? throw new InvalidOperationException(
+                    $"Activation '{GrainId}' does not expose a grain extension context."));
+        }
+
+        lock (_extensionLock)
+        {
+            _extensions[interfaceType.Name] = extension;
+        }
+
+        TraceLog.Write(
+            "activation-extension",
+            $"register {interfaceType.Name} on {GrainId} -> {extension.GetType().Name}");
+    }
 
     public async ValueTask<object?> InvokeAsync(
         InvocationMessage message,
@@ -133,7 +182,17 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                         TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");
                         try
                         {
-                            return await message.Invokable.InvokeAsync(_instance, turnToken);
+                            var target = ResolveInvocationTarget(message.Invokable);
+                            var filters = BuildIncomingFilterPipeline(target);
+                            if (filters.Count == 0)
+                            {
+                                return await message.Invokable.InvokeAsync(target, turnToken);
+                            }
+
+                            var context = new IncomingGrainCallContext(
+                                GrainId, message.Invokable, target, filters);
+                            await context.InvokeAsync();
+                            return context.Result;
                         }
                         finally
                         {
@@ -293,7 +352,8 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         ActivationMetadataRecord metadata,
         object instance,
         GrainTypeSchedulingPolicy schedulingPolicy,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IReadOnlyList<IIncomingGrainCallFilter>? siloFilters = null)
         => new(
             metadata.GrainId,
             instance,
@@ -301,7 +361,8 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
             metadata.OwnerVersion,
             schedulingPolicy,
             timeProvider,
-            isRecovered: true);
+            isRecovered: true,
+            siloFilters);
 
     private Task WaitForDrainAsync()
     {
@@ -507,7 +568,6 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                             if (_activationContext is not null)
                             {
                                 await _activationContext.InitializePersistentStatesAsync(turnToken);
-                                _activationContext = null;
                             }
 
                             TraceLog.Write("activation", $"activate {GrainId}");
@@ -614,6 +674,38 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
         => runtime is IStreamRuntimeContext streamRuntimeContext
             ? streamRuntimeContext.GetStreamRuntime()
             : null;
+
+    private IReadOnlyList<IIncomingGrainCallFilter> BuildIncomingFilterPipeline(object target)
+    {
+        if (_siloFilters.Count == 0 && target is not IIncomingGrainCallFilter)
+        {
+            return [];
+        }
+
+        var filters = new List<IIncomingGrainCallFilter>(_siloFilters.Count + 1);
+        filters.AddRange(_siloFilters);
+        if (target is IIncomingGrainCallFilter grainFilter)
+        {
+            filters.Add(grainFilter);
+        }
+
+        return filters;
+    }
+
+    private object ResolveInvocationTarget(IInvokable invokable)
+    {
+        ArgumentNullException.ThrowIfNull(invokable);
+
+        lock (_extensionLock)
+        {
+            if (_extensions.TryGetValue(invokable.InterfaceName, out var extension))
+            {
+                return extension;
+            }
+        }
+
+        return _instance;
+    }
 
     private void Touch() => Interlocked.Exchange(ref _lastTouchedUtcTicks, _timeProvider.GetUtcNow().UtcTicks);
 }

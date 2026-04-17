@@ -41,6 +41,16 @@ public sealed class PersistentGrainDirectory : IGrainDirectory
     public long GetInvalidationVersion()
         => ReadTableSnapshot().Version;
 
+    public long? GetRecordVersion(GrainId grainId)
+    {
+        var existing = ReadTableSnapshot().Checkpoint.Records
+            .FirstOrDefault(item => item.GrainId == grainId);
+
+        return string.IsNullOrWhiteSpace(existing.OwnerNodeName)
+            ? null
+            : existing.Version;
+    }
+
     public GrainOwnerRecord Resolve(GrainId grainId, GrainInterfaceVersionDescriptor? requestedInterface = null)
     {
         while (true)

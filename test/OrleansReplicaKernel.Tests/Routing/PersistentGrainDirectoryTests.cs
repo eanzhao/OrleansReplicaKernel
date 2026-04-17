@@ -2,6 +2,7 @@ using OrleansReplicaKernel.Identity;
 using OrleansReplicaKernel.Routing;
 using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Tests.TestSupport;
+using OrleansReplicaKernel.Versioning;
 
 namespace OrleansReplicaKernel.Tests.Routing;
 
@@ -144,6 +145,52 @@ public sealed class PersistentGrainDirectoryTests
         }
     }
 
+    [Fact]
+    public void DirectoryGrainLocator_InvalidatingOneGrainDoesNotReresolveOtherCachedEntries()
+    {
+        var directoryFile = CreateDirectoryFilePath();
+        try
+        {
+            var membershipView = new StubClusterMembershipView(
+                new Dictionary<string, NodeHealthStatus>
+                {
+                    ["node-a"] = NodeHealthStatus.Healthy,
+                    ["node-b"] = NodeHealthStatus.Healthy,
+                });
+            var observedDirectory = new CountingGrainDirectory(CreateDirectory(
+                directoryFile,
+                membershipView,
+                preferredNodeName: "node-a",
+                relocationNodeName: "node-b"));
+            var mutatingDirectory = CreateDirectory(
+                directoryFile,
+                membershipView,
+                preferredNodeName: "node-b",
+                relocationNodeName: "node-b");
+            var locator = new DirectoryGrainLocator(observedDirectory);
+            var grainA = new GrainId("Echo", "cache-invalidation-a");
+            var grainB = new GrainId("Echo", "cache-invalidation-b");
+
+            var initialA = locator.Locate(grainA);
+            var initialB = locator.Locate(grainB);
+            var updatedA = mutatingDirectory.SetOwner(grainA, "node-b");
+            var cachedB = locator.Locate(grainB);
+            var refreshedA = locator.Locate(grainA);
+
+            Assert.Equal(new GrainAddress("node-a", grainA, OwnerVersion: 1), initialA);
+            Assert.Equal(new GrainAddress("node-a", grainB, OwnerVersion: 1), initialB);
+            Assert.Equal(new GrainOwnerRecord(grainA, "node-b", Version: 2), updatedA);
+            Assert.Equal(initialB, cachedB);
+            Assert.Equal(new GrainAddress("node-b", grainA, OwnerVersion: 2), refreshedA);
+            Assert.Equal(2, observedDirectory.GetResolveCount(grainA));
+            Assert.Equal(1, observedDirectory.GetResolveCount(grainB));
+        }
+        finally
+        {
+            DeleteDirectoryArtifacts(directoryFile);
+        }
+    }
+
     private static PersistentGrainDirectory CreateDirectory(
         string directoryFile,
         IClusterMembershipView membershipView,
@@ -215,5 +262,34 @@ public sealed class PersistentGrainDirectoryTests
         }
 
         public PlacementLoadSnapshot GetSnapshot() => _snapshot;
+    }
+
+    private sealed class CountingGrainDirectory : IGrainDirectory
+    {
+        private readonly IGrainDirectory _inner;
+        private readonly Dictionary<GrainId, int> _resolveCounts = new();
+
+        public CountingGrainDirectory(IGrainDirectory inner)
+        {
+            _inner = inner;
+        }
+
+        public long GetInvalidationVersion() => _inner.GetInvalidationVersion();
+
+        public long? GetRecordVersion(GrainId grainId) => _inner.GetRecordVersion(grainId);
+
+        public GrainOwnerRecord Resolve(GrainId grainId, GrainInterfaceVersionDescriptor? requestedInterface = null)
+        {
+            _resolveCounts[grainId] = GetResolveCount(grainId) + 1;
+            return _inner.Resolve(grainId, requestedInterface);
+        }
+
+        public GrainOwnerRecord SetOwner(GrainId grainId, string ownerNodeName)
+            => _inner.SetOwner(grainId, ownerNodeName);
+
+        public GrainDirectoryCheckpoint ExportCheckpoint() => _inner.ExportCheckpoint();
+
+        public int GetResolveCount(GrainId grainId)
+            => _resolveCounts.TryGetValue(grainId, out var count) ? count : 0;
     }
 }

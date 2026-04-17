@@ -7,6 +7,8 @@ public interface IGrainDirectory
 {
     long GetInvalidationVersion();
 
+    long? GetRecordVersion(GrainId grainId);
+
     GrainOwnerRecord Resolve(GrainId grainId, GrainInterfaceVersionDescriptor? requestedInterface = null);
 
     GrainOwnerRecord SetOwner(GrainId grainId, string ownerNodeName);

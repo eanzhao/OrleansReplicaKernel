@@ -10,6 +10,7 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
 {
     private const string AlwaysInterleaveAttributeName = "OrleansReplicaKernel.CodeGeneration.AlwaysInterleaveAttribute";
     private const string PreferLocalPlacementAttributeName = "OrleansReplicaKernel.CodeGeneration.PreferLocalPlacementAttribute";
+    private const string StatelessWorkerAttributeName = "OrleansReplicaKernel.CodeGeneration.StatelessWorkerAttribute";
     private const string CollectionAgeLimitAttributeName = "OrleansReplicaKernel.CodeGeneration.CollectionAgeLimitAttribute";
     private const string ReentrantAttributeName = "OrleansReplicaKernel.CodeGeneration.ReentrantAttribute";
     private const string MayInterleaveAttributeName = "OrleansReplicaKernel.CodeGeneration.MayInterleaveAttribute";
@@ -194,6 +195,7 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
         string AliasPrefix,
         int? CollectionAgeLimitMilliseconds,
         bool PreferLocalPlacement,
+        int? StatelessWorkerMaxLocalWorkers,
         bool IsReentrant,
         string? MayInterleavePredicateMethodName,
         ImmutableArray<string> InterleavableMethods,
@@ -246,6 +248,7 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
 
             var collectionAgeLimit = ResolveCollectionAgeLimitMilliseconds(implementation);
             var preferLocalPlacement = HasAttribute(implementation, PreferLocalPlacementAttributeName);
+            var statelessWorkerMaxLocalWorkers = ResolveStatelessWorkerMaxLocalWorkers(implementation);
             var isReentrant = HasAttribute(implementation, ReentrantAttributeName);
             var mayInterleavePredicateMethodName = GetMayInterleavePredicateMethodName(implementation);
             var interleavableMethods = methodModels
@@ -276,6 +279,7 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
                 GetAliasPrefix(namespaceName),
                 collectionAgeLimit,
                 preferLocalPlacement,
+                statelessWorkerMaxLocalWorkers,
                 isReentrant,
                 mayInterleavePredicateMethodName,
                 interleavableMethods,
@@ -327,6 +331,16 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
             if (PreferLocalPlacement)
             {
                 builder.Append(", PreferLocalPlacement = true");
+            }
+
+            if (StatelessWorkerMaxLocalWorkers is not null)
+            {
+                builder.Append(", IsStatelessWorker = true");
+                if (StatelessWorkerMaxLocalWorkers.Value > 0)
+                {
+                    builder.Append(", MaxLocalWorkers = ")
+                        .Append(StatelessWorkerMaxLocalWorkers.Value);
+                }
             }
 
             if (IsReentrant)
@@ -1178,6 +1192,31 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
             .Distinct<IMethodSymbol>(SymbolEqualityComparer.Default)
             .OrderBy(static method => method.Locations.FirstOrDefault() is { } location ? location.SourceSpan.Start : int.MaxValue)
             .ToImmutableArray();
+
+    private static int? ResolveStatelessWorkerMaxLocalWorkers(INamedTypeSymbol implementation)
+    {
+        foreach (var attribute in implementation.GetAttributes())
+        {
+            if (!string.Equals(attribute.AttributeClass?.ToDisplayString(), StatelessWorkerAttributeName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (attribute.ConstructorArguments.Length == 0)
+            {
+                return 0;
+            }
+
+            if (attribute.ConstructorArguments[0].Value is int value)
+            {
+                return value;
+            }
+
+            return 0;
+        }
+
+        return null;
+    }
 
     private static int? ResolveCollectionAgeLimitMilliseconds(INamedTypeSymbol implementation)
     {

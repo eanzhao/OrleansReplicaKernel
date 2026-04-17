@@ -134,12 +134,135 @@ public sealed class BinarySerializationTests
         Assert.Contains("No callback target registered", invalidOperation.Message);
     }
 
+    [Fact]
+    public void Float_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        foreach (var value in new[] { 0f, -123.5f, float.MinValue, float.MaxValue })
+        {
+            var roundTripped = serializer.Deserialize<float>(serializer.Serialize(value));
+            Assert.Equal(BitConverter.SingleToInt32Bits(value), BitConverter.SingleToInt32Bits(roundTripped));
+        }
+    }
+
+    [Fact]
+    public void Double_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        foreach (var value in new[] { 0d, -123.5d, double.MinValue, double.MaxValue })
+        {
+            var roundTripped = serializer.Deserialize<double>(serializer.Serialize(value));
+            Assert.Equal(BitConverter.DoubleToInt64Bits(value), BitConverter.DoubleToInt64Bits(roundTripped));
+        }
+    }
+
+    [Fact]
+    public void Decimal_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        foreach (var value in new[] { 0m, -123.456m, decimal.MinValue, decimal.MaxValue })
+        {
+            Assert.Equal(value, serializer.Deserialize<decimal>(serializer.Serialize(value)));
+        }
+    }
+
+    [Fact]
+    public void UInt32_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        foreach (var value in new[] { 0u, 42u, uint.MaxValue })
+        {
+            Assert.Equal(value, serializer.Deserialize<uint>(serializer.Serialize(value)));
+        }
+    }
+
+    [Fact]
+    public void Int16_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        foreach (var value in new short[] { 0, -7, short.MinValue, short.MaxValue })
+        {
+            Assert.Equal(value, serializer.Deserialize<short>(serializer.Serialize(value)));
+        }
+    }
+
+    [Fact]
+    public void UInt16_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        foreach (var value in new ushort[] { 0, 7, ushort.MaxValue })
+        {
+            Assert.Equal(value, serializer.Deserialize<ushort>(serializer.Serialize(value)));
+        }
+    }
+
+    [Fact]
+    public void TimeSpan_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        foreach (var value in new[] { TimeSpan.Zero, TimeSpan.FromTicks(-123456789), TimeSpan.MinValue, TimeSpan.MaxValue })
+        {
+            Assert.Equal(value, serializer.Deserialize<TimeSpan>(serializer.Serialize(value)));
+        }
+    }
+
+    [Fact]
+    public void ByteArray_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        foreach (var value in new[]
+                 {
+                     Array.Empty<byte>(),
+                     new byte[] { 0 },
+                     new byte[] { 1, 2, 3, byte.MaxValue }
+                 })
+        {
+            Assert.Equal(value, serializer.Deserialize<byte[]>(serializer.Serialize(value)));
+        }
+    }
+
+    [Fact]
+    public void Enum_CanRoundTrip_ThroughBinaryWireFormat()
+    {
+        var serializer = CreateSerializer();
+
+        AssertEnumRoundTrips(serializer, SignedByteBackedEnum.Negative);
+        AssertEnumRoundTrips(serializer, SignedByteBackedEnum.Positive);
+        AssertEnumRoundTrips(serializer, ByteBackedEnum.Max);
+        AssertEnumRoundTrips(serializer, Int16BackedEnum.Min);
+        AssertEnumRoundTrips(serializer, UInt16BackedEnum.Max);
+        AssertEnumRoundTrips(serializer, Int32BackedEnum.Negative);
+        AssertEnumRoundTrips(serializer, UInt32BackedEnum.Max);
+        AssertEnumRoundTrips(serializer, Int64BackedEnum.Min);
+        AssertEnumRoundTrips(serializer, UInt64BackedEnum.Max);
+    }
+
     private static BinarySerializer CreateSerializer(Action<BinarySerializerBuilder>? configure = null)
     {
         var builder = new BinarySerializerBuilder()
             .AddCodecsFromAssembly(typeof(EchoGrain).Assembly);
         configure?.Invoke(builder);
         return builder.Build();
+    }
+
+    private static void AssertEnumRoundTrips<TEnum>(BinarySerializer serializer, TEnum value)
+        where TEnum : struct, Enum
+    {
+        Assert.Equal(value, serializer.Deserialize<TEnum>(serializer.Serialize(value)));
+
+        var writer = new BinaryBufferWriter();
+        serializer.WriteDynamic(writer, value);
+        var reader = new BinaryBufferReader(writer.WrittenSpan);
+        Assert.Equal(value, Assert.IsType<TEnum>(serializer.ReadDynamic(ref reader)));
+        reader.EnsureFullyConsumed();
     }
 
     private sealed record CustomPayload(
@@ -278,5 +401,53 @@ public sealed class BinarySerializationTests
             writer.WriteField(2, value.Revision, serializer);
             writer.WriteField(3, value.Tags, serializer);
         }
+    }
+
+    private enum SignedByteBackedEnum : sbyte
+    {
+        Negative = -8,
+        Positive = 7
+    }
+
+    private enum ByteBackedEnum : byte
+    {
+        Zero = 0,
+        Max = byte.MaxValue
+    }
+
+    private enum Int16BackedEnum : short
+    {
+        Min = short.MinValue,
+        Positive = 1234
+    }
+
+    private enum UInt16BackedEnum : ushort
+    {
+        Zero = 0,
+        Max = ushort.MaxValue
+    }
+
+    private enum Int32BackedEnum
+    {
+        Negative = -123456789,
+        Positive = 123456789
+    }
+
+    private enum UInt32BackedEnum : uint
+    {
+        Zero = 0,
+        Max = uint.MaxValue
+    }
+
+    private enum Int64BackedEnum : long
+    {
+        Min = long.MinValue,
+        Positive = 9876543210
+    }
+
+    private enum UInt64BackedEnum : ulong
+    {
+        Zero = 0,
+        Max = ulong.MaxValue
     }
 }

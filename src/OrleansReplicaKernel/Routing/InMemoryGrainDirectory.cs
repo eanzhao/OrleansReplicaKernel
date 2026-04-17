@@ -74,6 +74,16 @@ public sealed class InMemoryGrainDirectory : IGrainDirectory
         }
     }
 
+    public long? GetRecordVersion(GrainId grainId)
+    {
+        lock (_lock)
+        {
+            return _records.TryGetValue(grainId, out var record)
+                ? record.Version
+                : null;
+        }
+    }
+
     public GrainOwnerRecord Resolve(GrainId grainId, GrainInterfaceVersionDescriptor? requestedInterface = null)
     {
         lock (_lock)

@@ -258,6 +258,11 @@ public sealed class BinarySerializer
 
     private IBinaryCodec? CreateCodecFromAlias(string alias)
     {
+        if (alias.StartsWith(EnumBinaryCodec.Prefix, StringComparison.Ordinal))
+        {
+            return EnumBinaryCodec.CreateFromAlias(alias);
+        }
+
         if (alias.StartsWith(ArrayBinaryCodec.Prefix, StringComparison.Ordinal))
         {
             var elementAlias = alias[ArrayBinaryCodec.Prefix.Length..];
@@ -298,6 +303,11 @@ public sealed class BinarySerializer
 
     private IBinaryCodec? CreateCodecFromType(Type type)
     {
+        if (type.IsEnum)
+        {
+            return EnumBinaryCodec.Create(type);
+        }
+
         if (type.IsArray && type.GetArrayRank() == 1)
         {
             var elementCodec = ResolveCodec(type.GetElementType()!);

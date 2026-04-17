@@ -1,9 +1,10 @@
 using OrleansReplicaKernel.Identity;
+using OrleansReplicaKernel.Runtime;
 using OrleansReplicaKernel.Transactions;
 
 namespace OrleansReplicaKernel.Storage;
 
-internal sealed class GrainActivationContext
+internal sealed class GrainActivationContext : IGrainExtensionContext
 {
     private readonly PersistentStateFactory _persistentStateFactory;
     private readonly TransactionalStateFactory _transactionalStateFactory;
@@ -63,6 +64,26 @@ internal sealed class GrainActivationContext
         _transactionalStates.Add(key, created);
         return created;
     }
+
+    public async ValueTask<IPersistentState<TState>> GetPersistentStateAsync<TState>(
+        string stateName,
+        string? storageName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var state = ResolvePersistentState<TState>(stateName, storageName);
+        if (state is IPersistentStateParticipant participant)
+        {
+            await participant.EnsureInitializedAsync(cancellationToken);
+        }
+
+        return state;
+    }
+
+    public ValueTask<ITransactionalState<TState>> GetTransactionalStateAsync<TState>(
+        string stateName,
+        string? storageName = null,
+        CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(ResolveTransactionalState<TState>(stateName, storageName));
 
     public async ValueTask InitializePersistentStatesAsync(CancellationToken cancellationToken = default)
     {

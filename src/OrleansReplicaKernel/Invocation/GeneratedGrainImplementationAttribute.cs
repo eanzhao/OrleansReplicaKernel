@@ -19,6 +19,10 @@ public sealed class GeneratedGrainImplementationAttribute : Attribute
 
     public bool PreferLocalPlacement { get; set; }
 
+    public bool IsStatelessWorker { get; set; }
+
+    public int MaxLocalWorkers { get; set; }
+
     public string[] InterleavableMethods { get; set; } = [];
 
     public bool IsReentrant { get; set; }

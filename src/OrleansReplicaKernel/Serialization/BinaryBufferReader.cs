@@ -47,6 +47,12 @@ public ref struct BinaryBufferReader
         return new DateTimeOffset(ticks, TimeSpan.FromMinutes(offsetMinutes));
     }
 
+    public float ReadFloat() => BitConverter.Int32BitsToSingle(ReadVarInt32());
+
+    public double ReadDouble() => BitConverter.Int64BitsToDouble(ReadVarInt64());
+
+    public TimeSpan ReadTimeSpan() => new(ReadVarInt64());
+
     public Guid ReadGuid()
     {
         var span = ReadSpan(16);

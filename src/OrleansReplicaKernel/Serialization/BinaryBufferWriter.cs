@@ -81,6 +81,12 @@ public sealed class BinaryBufferWriter
         WriteVarInt32((int)value.Offset.TotalMinutes);
     }
 
+    public void WriteFloat(float value) => WriteVarInt32(BitConverter.SingleToInt32Bits(value));
+
+    public void WriteDouble(double value) => WriteVarInt64(BitConverter.DoubleToInt64Bits(value));
+
+    public void WriteTimeSpan(TimeSpan value) => WriteVarInt64(value.Ticks);
+
     public void WriteGuid(Guid value)
     {
         Span<byte> buffer = stackalloc byte[16];

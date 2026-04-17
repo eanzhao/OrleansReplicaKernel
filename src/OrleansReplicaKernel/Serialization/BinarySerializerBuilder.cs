@@ -52,11 +52,19 @@ public sealed class BinarySerializerBuilder
     {
         AddCodec(new BooleanBinaryCodec());
         AddCodec(new ByteBinaryCodec());
+        AddCodec(new Int16BinaryCodec());
+        AddCodec(new UInt16BinaryCodec());
         AddCodec(new Int32BinaryCodec());
+        AddCodec(new UInt32BinaryCodec());
         AddCodec(new Int64BinaryCodec());
+        AddCodec(new FloatBinaryCodec());
+        AddCodec(new DoubleBinaryCodec());
+        AddCodec(new DecimalBinaryCodec());
         AddCodec(new StringBinaryCodec());
         AddCodec(new GuidBinaryCodec());
         AddCodec(new DateTimeOffsetBinaryCodec());
+        AddCodec(new TimeSpanBinaryCodec());
+        AddCodec(new ByteArrayBinaryCodec());
         AddCodec(new ExceptionBinaryCodec());
         AddCodec(new InvalidOperationExceptionBinaryCodec());
         AddCodec(new ActivationQuiescingExceptionBinaryCodec());

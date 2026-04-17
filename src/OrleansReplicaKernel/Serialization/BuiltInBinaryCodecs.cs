@@ -25,6 +25,24 @@ internal sealed class ByteBinaryCodec : BinaryCodec<byte>
     public override void Write(BinaryBufferWriter writer, byte value, BinarySerializer serializer) => writer.WriteByte(value);
 }
 
+internal sealed class Int16BinaryCodec : BinaryCodec<short>
+{
+    public override string Alias => "sys.int16";
+
+    public override short Read(ref BinaryBufferReader reader, BinarySerializer serializer) => checked((short)reader.ReadVarInt32());
+
+    public override void Write(BinaryBufferWriter writer, short value, BinarySerializer serializer) => writer.WriteVarInt32(value);
+}
+
+internal sealed class UInt16BinaryCodec : BinaryCodec<ushort>
+{
+    public override string Alias => "sys.uint16";
+
+    public override ushort Read(ref BinaryBufferReader reader, BinarySerializer serializer) => checked((ushort)reader.ReadVarUInt32());
+
+    public override void Write(BinaryBufferWriter writer, ushort value, BinarySerializer serializer) => writer.WriteVarUInt32(value);
+}
+
 internal sealed class Int32BinaryCodec : BinaryCodec<int>
 {
     public override string Alias => "sys.int32";
@@ -34,6 +52,15 @@ internal sealed class Int32BinaryCodec : BinaryCodec<int>
     public override void Write(BinaryBufferWriter writer, int value, BinarySerializer serializer) => writer.WriteVarInt32(value);
 }
 
+internal sealed class UInt32BinaryCodec : BinaryCodec<uint>
+{
+    public override string Alias => "sys.uint32";
+
+    public override uint Read(ref BinaryBufferReader reader, BinarySerializer serializer) => reader.ReadVarUInt32();
+
+    public override void Write(BinaryBufferWriter writer, uint value, BinarySerializer serializer) => writer.WriteVarUInt32(value);
+}
+
 internal sealed class Int64BinaryCodec : BinaryCodec<long>
 {
     public override string Alias => "sys.int64";
@@ -41,6 +68,48 @@ internal sealed class Int64BinaryCodec : BinaryCodec<long>
     public override long Read(ref BinaryBufferReader reader, BinarySerializer serializer) => reader.ReadVarInt64();
 
     public override void Write(BinaryBufferWriter writer, long value, BinarySerializer serializer) => writer.WriteVarInt64(value);
+}
+
+internal sealed class FloatBinaryCodec : BinaryCodec<float>
+{
+    public override string Alias => "sys.float";
+
+    public override float Read(ref BinaryBufferReader reader, BinarySerializer serializer) => reader.ReadFloat();
+
+    public override void Write(BinaryBufferWriter writer, float value, BinarySerializer serializer) => writer.WriteFloat(value);
+}
+
+internal sealed class DoubleBinaryCodec : BinaryCodec<double>
+{
+    public override string Alias => "sys.double";
+
+    public override double Read(ref BinaryBufferReader reader, BinarySerializer serializer) => reader.ReadDouble();
+
+    public override void Write(BinaryBufferWriter writer, double value, BinarySerializer serializer) => writer.WriteDouble(value);
+}
+
+internal sealed class DecimalBinaryCodec : BinaryCodec<decimal>
+{
+    public override string Alias => "sys.decimal";
+
+    public override decimal Read(ref BinaryBufferReader reader, BinarySerializer serializer)
+    {
+        var bits = new int[4];
+        bits[0] = reader.ReadVarInt32();
+        bits[1] = reader.ReadVarInt32();
+        bits[2] = reader.ReadVarInt32();
+        bits[3] = reader.ReadVarInt32();
+        return new decimal(bits);
+    }
+
+    public override void Write(BinaryBufferWriter writer, decimal value, BinarySerializer serializer)
+    {
+        var bits = decimal.GetBits(value);
+        writer.WriteVarInt32(bits[0]);
+        writer.WriteVarInt32(bits[1]);
+        writer.WriteVarInt32(bits[2]);
+        writer.WriteVarInt32(bits[3]);
+    }
 }
 
 internal sealed class StringBinaryCodec : BinaryCodec<string>
@@ -69,6 +138,162 @@ internal sealed class DateTimeOffsetBinaryCodec : BinaryCodec<DateTimeOffset>
 
     public override void Write(BinaryBufferWriter writer, DateTimeOffset value, BinarySerializer serializer)
         => writer.WriteDateTimeOffset(value);
+}
+
+internal sealed class TimeSpanBinaryCodec : BinaryCodec<TimeSpan>
+{
+    public override string Alias => "sys.timespan";
+
+    public override TimeSpan Read(ref BinaryBufferReader reader, BinarySerializer serializer) => reader.ReadTimeSpan();
+
+    public override void Write(BinaryBufferWriter writer, TimeSpan value, BinarySerializer serializer) => writer.WriteTimeSpan(value);
+}
+
+internal sealed class ByteArrayBinaryCodec : BinaryCodec<byte[]>
+{
+    public override string Alias => "sys.bytes";
+
+    public override byte[] Read(ref BinaryBufferReader reader, BinarySerializer serializer)
+    {
+        var length = checked((int)reader.ReadVarUInt32());
+        return reader.ReadSpan(length).ToArray();
+    }
+
+    public override void Write(BinaryBufferWriter writer, byte[] value, BinarySerializer serializer)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        writer.WriteVarUInt32((uint)value.Length);
+        writer.WriteBytes(value);
+    }
+}
+
+internal static class EnumBinaryCodec
+{
+    public const string Prefix = "sys.enum|";
+    private const char AssemblyTypeSeparator = '|';
+
+    public static IBinaryCodec Create(Type enumType)
+    {
+        ArgumentNullException.ThrowIfNull(enumType);
+
+        if (!enumType.IsEnum)
+        {
+            throw new InvalidOperationException($"Type '{enumType.FullName}' is not an enum.");
+        }
+
+        var codecType = typeof(EnumBinaryCodec<>).MakeGenericType(enumType);
+        return (IBinaryCodec)Activator.CreateInstance(codecType)!;
+    }
+
+    public static IBinaryCodec CreateFromAlias(string alias)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(alias);
+
+        if (!alias.StartsWith(Prefix, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Invalid enum codec alias '{alias}'.");
+        }
+
+        return Create(ResolveType(alias[Prefix.Length..]));
+    }
+
+    public static string GetAlias(Type enumType)
+    {
+        ArgumentNullException.ThrowIfNull(enumType);
+
+        var assemblyName = enumType.Assembly.GetName().Name;
+        var fullName = enumType.FullName;
+        if (string.IsNullOrWhiteSpace(assemblyName) || string.IsNullOrWhiteSpace(fullName))
+        {
+            throw new InvalidOperationException($"Unable to resolve stable alias for enum '{enumType.FullName}'.");
+        }
+
+        return $"{Prefix}{assemblyName}{AssemblyTypeSeparator}{fullName}";
+    }
+
+    private static Type ResolveType(string typeDescriptor)
+    {
+        var separatorIndex = typeDescriptor.IndexOf(AssemblyTypeSeparator);
+        if (separatorIndex <= 0 || separatorIndex == typeDescriptor.Length - 1)
+        {
+            throw new InvalidOperationException($"Invalid enum codec alias payload '{typeDescriptor}'.");
+        }
+
+        var assemblyName = typeDescriptor[..separatorIndex];
+        var fullName = typeDescriptor[(separatorIndex + 1)..];
+        var enumType = AppDomain.CurrentDomain.GetAssemblies()
+            .Where(assembly => string.Equals(assembly.GetName().Name, assemblyName, StringComparison.Ordinal))
+            .Select(assembly => assembly.GetType(fullName, throwOnError: false))
+            .FirstOrDefault(type => type is not null)
+            ?? AppDomain.CurrentDomain.GetAssemblies()
+                .Select(assembly => assembly.GetType(fullName, throwOnError: false))
+                .FirstOrDefault(type => type is not null)
+            ?? throw new InvalidOperationException($"Unable to resolve enum type '{typeDescriptor}' for binary serialization.");
+
+        if (!enumType.IsEnum)
+        {
+            throw new InvalidOperationException($"Type '{enumType.FullName}' is not an enum.");
+        }
+
+        return enumType;
+    }
+}
+
+internal sealed class EnumBinaryCodec<TEnum> : BinaryCodec<TEnum>
+    where TEnum : struct, Enum
+{
+    private static readonly TypeCode UnderlyingTypeCode = Type.GetTypeCode(Enum.GetUnderlyingType(typeof(TEnum)));
+
+    public override string Alias => EnumBinaryCodec.GetAlias(typeof(TEnum));
+
+    public override TEnum Read(ref BinaryBufferReader reader, BinarySerializer serializer)
+        => UnderlyingTypeCode switch
+        {
+            TypeCode.Byte => (TEnum)Enum.ToObject(typeof(TEnum), reader.ReadByte()),
+            TypeCode.SByte => (TEnum)Enum.ToObject(typeof(TEnum), checked((sbyte)reader.ReadVarInt32())),
+            TypeCode.Int16 => (TEnum)Enum.ToObject(typeof(TEnum), checked((short)reader.ReadVarInt32())),
+            TypeCode.UInt16 => (TEnum)Enum.ToObject(typeof(TEnum), checked((ushort)reader.ReadVarUInt32())),
+            TypeCode.Int32 => (TEnum)Enum.ToObject(typeof(TEnum), reader.ReadVarInt32()),
+            TypeCode.UInt32 => (TEnum)Enum.ToObject(typeof(TEnum), reader.ReadVarUInt32()),
+            TypeCode.Int64 => (TEnum)Enum.ToObject(typeof(TEnum), reader.ReadVarInt64()),
+            TypeCode.UInt64 => (TEnum)Enum.ToObject(typeof(TEnum), reader.ReadVarUInt64()),
+            _ => throw new InvalidOperationException($"Enum '{typeof(TEnum).FullName}' uses unsupported underlying type '{Enum.GetUnderlyingType(typeof(TEnum)).FullName}'.")
+        };
+
+    public override void Write(BinaryBufferWriter writer, TEnum value, BinarySerializer serializer)
+    {
+        switch (UnderlyingTypeCode)
+        {
+            case TypeCode.Byte:
+                writer.WriteByte(Convert.ToByte(value));
+                return;
+            case TypeCode.SByte:
+                writer.WriteVarInt32(Convert.ToSByte(value));
+                return;
+            case TypeCode.Int16:
+                writer.WriteVarInt32(Convert.ToInt16(value));
+                return;
+            case TypeCode.UInt16:
+                writer.WriteVarUInt32(Convert.ToUInt16(value));
+                return;
+            case TypeCode.Int32:
+                writer.WriteVarInt32(Convert.ToInt32(value));
+                return;
+            case TypeCode.UInt32:
+                writer.WriteVarUInt32(Convert.ToUInt32(value));
+                return;
+            case TypeCode.Int64:
+                writer.WriteVarInt64(Convert.ToInt64(value));
+                return;
+            case TypeCode.UInt64:
+                writer.WriteVarUInt64(Convert.ToUInt64(value));
+                return;
+            default:
+                throw new InvalidOperationException(
+                    $"Enum '{typeof(TEnum).FullName}' uses unsupported underlying type '{Enum.GetUnderlyingType(typeof(TEnum)).FullName}'.");
+        }
+    }
 }
 
 internal sealed class ExceptionBinaryCodec : BinaryObjectCodec<Exception>
