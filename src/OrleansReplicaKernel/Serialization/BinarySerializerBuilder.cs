@@ -35,7 +35,8 @@ public sealed class BinarySerializerBuilder
                      .Where(type =>
                          typeof(IBinaryCodec).IsAssignableFrom(type)
                          && !type.IsAbstract
-                         && !type.ContainsGenericParameters))
+                         && !type.ContainsGenericParameters
+                         && !type.IsNestedPrivate))
         {
             if (Activator.CreateInstance(type, nonPublic: true) is IBinaryCodec codec)
             {

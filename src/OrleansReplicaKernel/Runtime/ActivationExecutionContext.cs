@@ -10,6 +10,7 @@ namespace OrleansReplicaKernel.Runtime;
 public static class ActivationExecutionContext
 {
     private static readonly AsyncLocal<ExecutionState?> CurrentStateSlot = new();
+    private static readonly AsyncLocal<TimeSpan?> RequestTimeoutSlot = new();
 
     public static IInvocationRuntime? CurrentRuntime => CurrentStateSlot.Value?.Runtime;
 
@@ -28,6 +29,12 @@ public static class ActivationExecutionContext
     public static InvocationIdentity? CurrentInvocationIdentity => CurrentStateSlot.Value?.Identity;
 
     public static TransactionInfo? CurrentTransaction => TransactionContext.Current;
+
+    public static TimeSpan? CurrentRequestTimeout
+    {
+        get => RequestTimeoutSlot.Value;
+        set => RequestTimeoutSlot.Value = value;
+    }
 
     public static async ValueTask<T> RunAsync<T>(
         IInvocationRuntime runtime,

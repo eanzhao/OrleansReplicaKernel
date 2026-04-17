@@ -15,6 +15,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
     private const string ReentrantAttributeName = "OrleansReplicaKernel.CodeGeneration.ReentrantAttribute";
     private const string MayInterleaveAttributeName = "OrleansReplicaKernel.CodeGeneration.MayInterleaveAttribute";
     private const string GrainInterfaceVersionAttributeName = "OrleansReplicaKernel.Versioning.GrainInterfaceVersionAttribute";
+    private const string GenerateSerializerAttributeName = "OrleansReplicaKernel.CodeGeneration.GenerateSerializerAttribute";
+    private const string IdAttributeName = "OrleansReplicaKernel.CodeGeneration.IdAttribute";
 
     private static readonly DiagnosticDescriptor MissingGrainImplementationDescriptor = new(
         id: "ORKGEN001",
@@ -78,7 +80,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
 
     private sealed record GenerationModel(
         ImmutableArray<GrainContractModel> GrainContracts,
-        ImmutableArray<ObjectReferenceContractModel> ObjectReferenceContracts)
+        ImmutableArray<ObjectReferenceContractModel> ObjectReferenceContracts,
+        ImmutableArray<SerializableTypeModel> SerializableTypes)
     {
         public static GenerationModel Create(
             Compilation compilation,
@@ -127,12 +130,26 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
                 }
             }
 
-            return new GenerationModel(grainContracts.ToImmutable(), objectReferenceContracts.ToImmutable());
+            var serializableTypes = ImmutableArray.CreateBuilder<SerializableTypeModel>();
+            foreach (var type in allTypes.Where(static t => HasAttribute(t, GenerateSerializerAttributeName)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var model = SerializableTypeModel.TryCreate(type);
+                if (model is not null)
+                {
+                    serializableTypes.Add(model);
+                }
+            }
+
+            return new GenerationModel(
+                grainContracts.ToImmutable(),
+                objectReferenceContracts.ToImmutable(),
+                serializableTypes.ToImmutable());
         }
 
         public string EmitSource()
         {
-            if (GrainContracts.Length == 0 && ObjectReferenceContracts.Length == 0)
+            if (GrainContracts.Length == 0 && ObjectReferenceContracts.Length == 0 && SerializableTypes.Length == 0)
             {
                 return string.Empty;
             }
@@ -140,6 +157,7 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
             var byNamespace = GrainContracts
                 .Select(static contract => contract.Namespace)
                 .Concat(ObjectReferenceContracts.Select(static contract => contract.Namespace))
+                .Concat(SerializableTypes.Select(static t => t.Namespace))
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(static item => item, StringComparer.Ordinal)
                 .ToArray();
@@ -174,6 +192,13 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
                              .OrderBy(static contract => contract.ContractName, StringComparer.Ordinal))
                 {
                     objectReferenceContract.AppendSource(builder);
+                }
+
+                foreach (var serializableType in SerializableTypes
+                             .Where(t => string.Equals(t.Namespace, currentNamespace, StringComparison.Ordinal))
+                             .OrderBy(static t => t.TypeName, StringComparer.Ordinal))
+                {
+                    serializableType.AppendSource(builder);
                 }
 
                 builder.AppendLine("}");
@@ -1115,6 +1140,276 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
         return false;
     }
 
+    private sealed record SerializableFieldModel(
+        int FieldId,
+        string Name,
+        string TypeName,
+        bool IsNullableValueType,
+        bool IsNullableReferenceType,
+        bool IsPolymorphic,
+        bool IsProperty)
+    {
+        public string WriteCall
+        {
+            get
+            {
+                var accessor = $"value.{Name}";
+                if (IsPolymorphic)
+                    return $"writer.WriteDynamicField({FieldId}, {accessor}, serializer);";
+                if (IsNullableValueType)
+                    return $"writer.WriteNullableField({FieldId}, {accessor}, serializer);";
+                if (IsNullableReferenceType)
+                    return $"writer.WriteOptionalField({FieldId}, {accessor}, serializer);";
+                return $"writer.WriteField({FieldId}, {accessor}, serializer);";
+            }
+        }
+    }
+
+    private sealed record SerializableTypeModel(
+        string Namespace,
+        string TypeName,
+        string FullTypeName,
+        string CodecClassName,
+        string Alias,
+        bool IsValueType,
+        bool IsRecord,
+        ImmutableArray<SerializableFieldModel> Fields,
+        ImmutableArray<SerializableFieldModel> ConstructorParams)
+    {
+        public static SerializableTypeModel? TryCreate(INamedTypeSymbol type)
+        {
+            var namespaceName = type.ContainingNamespace.IsGlobalNamespace
+                ? string.Empty
+                : type.ContainingNamespace.ToDisplayString();
+            var fullTypeName = type.ToDisplayString(TypeDisplayFormat);
+            var fields = ImmutableArray.CreateBuilder<SerializableFieldModel>();
+
+            foreach (var member in GetAllMembers(type))
+            {
+                var idAttr = member.GetAttributes().FirstOrDefault(a =>
+                    string.Equals(a.AttributeClass?.ToDisplayString(), IdAttributeName, StringComparison.Ordinal));
+                if (idAttr is null) continue;
+
+                var fieldId = (int)idAttr.ConstructorArguments[0].Value!;
+                string memberName;
+                ITypeSymbol memberType;
+                bool isProperty;
+
+                switch (member)
+                {
+                    case IPropertySymbol prop:
+                        memberName = prop.Name;
+                        memberType = prop.Type;
+                        isProperty = true;
+                        break;
+                    case IFieldSymbol field:
+                        memberName = field.Name;
+                        memberType = field.Type;
+                        isProperty = false;
+                        break;
+                    default:
+                        continue;
+                }
+
+                var isNullableValueType = memberType.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+                var isNullableReferenceType = !isNullableValueType
+                    && memberType.NullableAnnotation == NullableAnnotation.Annotated
+                    && memberType.IsReferenceType;
+
+                var rawType = isNullableReferenceType
+                    ? (memberType as INamedTypeSymbol)?.TypeArguments.FirstOrDefault() ?? memberType
+                    : memberType;
+                var isPolymorphic = rawType.TypeKind == TypeKind.Interface
+                    || (rawType.TypeKind == TypeKind.Class && rawType.IsAbstract);
+
+                var displayType = memberType.ToDisplayString(TypeDisplayFormat);
+
+                fields.Add(new SerializableFieldModel(
+                    fieldId, memberName, displayType,
+                    isNullableValueType, isNullableReferenceType, isPolymorphic, isProperty));
+            }
+
+            if (fields.Count == 0) return null;
+
+            var ordered = fields.OrderBy(f => f.FieldId).ToImmutableArray();
+            var constructorParams = ResolveConstructorParams(type, ordered);
+            var codecName = type.Name + "BinaryCodec";
+            var alias = "generated." + ToKebabCase(type.Name);
+
+            return new SerializableTypeModel(
+                namespaceName,
+                type.Name,
+                fullTypeName,
+                codecName,
+                alias,
+                type.IsValueType,
+                type.IsRecord,
+                ordered,
+                constructorParams);
+        }
+
+        public void AppendSource(StringBuilder builder)
+        {
+            builder.Append("internal sealed class ").Append(CodecClassName)
+                .Append(" : BinaryObjectCodec<").Append(FullTypeName).AppendLine(">");
+            builder.AppendLine("{");
+            builder.Append("    public override string Alias => \"").Append(Alias).AppendLine("\";");
+            builder.AppendLine();
+            AppendReadFields(builder);
+            builder.AppendLine();
+            AppendWriteFields(builder);
+            builder.AppendLine("}");
+            builder.AppendLine();
+        }
+
+        private void AppendReadFields(StringBuilder builder)
+        {
+            builder.Append("    protected override ").Append(FullTypeName)
+                .AppendLine(" ReadFields(ref BinaryObjectReader reader, BinarySerializer serializer)");
+            builder.AppendLine("    {");
+
+            foreach (var field in Fields)
+            {
+                builder.Append("        ").Append(field.TypeName).Append(" ")
+                    .Append(ToLocalName(field.Name)).Append(" = ");
+                if (field.IsNullableValueType || field.IsNullableReferenceType || field.IsPolymorphic)
+                    builder.AppendLine("null!;");
+                else
+                    builder.AppendLine("default!;");
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("        while (reader.TryReadField(out var fieldId, out var payload))");
+            builder.AppendLine("        {");
+            builder.AppendLine("            switch (fieldId)");
+            builder.AppendLine("            {");
+
+            foreach (var field in Fields)
+            {
+                builder.Append("                case ").Append(field.FieldId).AppendLine(":");
+                if (field.IsPolymorphic)
+                {
+                    var castType = field.TypeName.EndsWith("?")
+                        ? field.TypeName.Substring(0, field.TypeName.Length - 1)
+                        : field.TypeName;
+                    var suffix = field.IsNullableReferenceType ? ";" : "!;";
+                    builder.Append("                    ").Append(ToLocalName(field.Name))
+                        .Append(" = (").Append(castType).Append("?)serializer.ReadDynamic(payload)").AppendLine(suffix);
+                }
+                else if (field.IsNullableValueType)
+                {
+                    var innerType = field.TypeName.EndsWith("?")
+                        ? field.TypeName.Substring(0, field.TypeName.Length - 1)
+                        : field.TypeName;
+                    builder.Append("                    ").Append(ToLocalName(field.Name))
+                        .Append(" = serializer.ReadNullable<").Append(innerType).AppendLine(">(payload);");
+                }
+                else if (field.IsNullableReferenceType)
+                {
+                    var innerType = field.TypeName.EndsWith("?")
+                        ? field.TypeName.Substring(0, field.TypeName.Length - 1)
+                        : field.TypeName;
+                    builder.Append("                    ").Append(ToLocalName(field.Name))
+                        .Append(" = serializer.ReadOptional<").Append(innerType).AppendLine(">(payload);");
+                }
+                else
+                {
+                    builder.Append("                    ").Append(ToLocalName(field.Name))
+                        .Append(" = serializer.Read<").Append(field.TypeName).AppendLine(">(payload);");
+                }
+                builder.AppendLine("                    break;");
+            }
+
+            builder.AppendLine("            }");
+            builder.AppendLine("        }");
+            builder.AppendLine();
+
+            if (ConstructorParams.Length > 0)
+            {
+                builder.Append("        return new ").Append(FullTypeName).Append("(");
+                for (var i = 0; i < ConstructorParams.Length; i++)
+                {
+                    if (i > 0) builder.Append(", ");
+                    builder.Append(ToLocalName(ConstructorParams[i].Name));
+                }
+                builder.AppendLine(");");
+            }
+            else
+            {
+                builder.Append("        return new ").Append(FullTypeName).AppendLine("()");
+                builder.AppendLine("        {");
+                foreach (var field in Fields.Where(f => f.IsProperty))
+                {
+                    builder.Append("            ").Append(field.Name).Append(" = ")
+                        .Append(ToLocalName(field.Name)).AppendLine(",");
+                }
+                builder.AppendLine("        };");
+            }
+
+            builder.AppendLine("    }");
+        }
+
+        private void AppendWriteFields(StringBuilder builder)
+        {
+            builder.Append("    protected override void WriteFields(BinaryObjectWriter writer, ")
+                .Append(FullTypeName).AppendLine(" value, BinarySerializer serializer)");
+            builder.AppendLine("    {");
+            foreach (var field in Fields)
+            {
+                builder.Append("        ").AppendLine(field.WriteCall);
+            }
+            builder.AppendLine("    }");
+        }
+
+        private static string ToLocalName(string name)
+        {
+            var result = char.ToLowerInvariant(name[0]) + name.Substring(1);
+            if (result == name) result = "_" + result;
+            return result;
+        }
+
+        private static ImmutableArray<SerializableFieldModel> ResolveConstructorParams(
+            INamedTypeSymbol type,
+            ImmutableArray<SerializableFieldModel> fields)
+        {
+            if (type.IsRecord || (!type.IsValueType && type.Constructors.Length > 0))
+            {
+                var primaryCtor = type.Constructors
+                    .Where(c => !c.IsImplicitlyDeclared || type.IsRecord)
+                    .OrderByDescending(c => c.Parameters.Length)
+                    .FirstOrDefault();
+
+                if (primaryCtor is not null && primaryCtor.Parameters.Length > 0)
+                {
+                    var matched = new List<SerializableFieldModel>();
+                    foreach (var param in primaryCtor.Parameters)
+                    {
+                        var field = fields.FirstOrDefault(f =>
+                            string.Equals(f.Name, param.Name, StringComparison.OrdinalIgnoreCase));
+                        if (field is null) return ImmutableArray<SerializableFieldModel>.Empty;
+                        matched.Add(field);
+                    }
+                    return matched.ToImmutableArray();
+                }
+            }
+
+            return ImmutableArray<SerializableFieldModel>.Empty;
+        }
+
+        private static IEnumerable<ISymbol> GetAllMembers(INamedTypeSymbol type)
+        {
+            var current = type;
+            while (current is not null)
+            {
+                foreach (var member in current.GetMembers())
+                {
+                    yield return member;
+                }
+                current = current.BaseType;
+            }
+        }
+    }
+
     private static IEnumerable<INamedTypeSymbol> EnumerateTypes(INamespaceSymbol @namespace)
     {
         foreach (var member in @namespace.GetTypeMembers())
@@ -1152,6 +1447,8 @@ public sealed class OrleansReplicaKernelSourceGenerator : IIncrementalGenerator
     private static bool IsPotentialGrainContract(INamedTypeSymbol type)
         => type.TypeKind == TypeKind.Interface
            && !type.IsImplicitlyDeclared
+           && type.DeclaredAccessibility != Accessibility.Private
+           && type.ContainingType is null
            && type.Name.Length > 1
            && type.Name[0] == 'I'
            && type.Name.EndsWith("Grain", StringComparison.Ordinal);

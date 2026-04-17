@@ -378,7 +378,8 @@ public sealed class InProcessRuntime : IObjectReferenceRuntime, IMessageReceiver
             invokable,
             _sourceKind,
             ActivationExecutionContext.CurrentInvocationIdentity ?? _localInvocationIdentity,
-            TransactionContext.Current);
+            TransactionContext.Current,
+            TimeToLive: ActivationExecutionContext.CurrentRequestTimeout);
         message = OrleansReplicaKernelTelemetry.StampCurrentTraceContext(message);
         var routedAddress = _router.Route(message);
         var routedMessage = message with { Target = routedAddress };

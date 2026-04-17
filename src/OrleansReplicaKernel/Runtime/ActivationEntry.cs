@@ -180,22 +180,32 @@ public sealed class ActivationEntry : IAsyncDisposable, IActivationTimerRegistry
                     {
                         var startedAt = _timeProvider.GetTimestamp();
                         TraceLog.Write("activation", $"dispatch {message.Invokable.MethodName} to {GrainId}");
+                        CancellationTokenSource? ttlCts = null;
                         try
                         {
+                            var requestToken = turnToken;
+                            if (message.TimeToLive is { } ttl)
+                            {
+                                ttlCts = new CancellationTokenSource(ttl);
+                                requestToken = CancellationTokenSource
+                                    .CreateLinkedTokenSource(turnToken, ttlCts.Token).Token;
+                            }
+
                             var target = ResolveInvocationTarget(message.Invokable);
                             var filters = BuildIncomingFilterPipeline(target);
                             if (filters.Count == 0)
                             {
-                                return await message.Invokable.InvokeAsync(target, turnToken);
+                                return await message.Invokable.InvokeAsync(target, requestToken);
                             }
 
                             var context = new IncomingGrainCallContext(
-                                GrainId, message.Invokable, target, filters);
+                                GrainId, message.Invokable, target, filters, requestToken);
                             await context.InvokeAsync();
                             return context.Result;
                         }
                         finally
                         {
+                            ttlCts?.Dispose();
                             OrleansReplicaKernelTelemetry.RecordTurnDuration(
                                 _timeProvider.GetElapsedTime(startedAt),
                                 GrainId,

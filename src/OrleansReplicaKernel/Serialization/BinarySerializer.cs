@@ -19,6 +19,9 @@ public sealed class BinarySerializer
         }
     }
 
+    public IEnumerable<KeyValuePair<Type, IBinaryCodec>> RegisteredCodecs
+        => _codecsByType;
+
     public T Deserialize<T>(ReadOnlyMemory<byte> payload)
     {
         var reader = new BinaryBufferReader(payload.Span);

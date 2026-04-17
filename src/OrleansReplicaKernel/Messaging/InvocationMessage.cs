@@ -18,4 +18,5 @@ public sealed record InvocationMessage(
     InvocationIdentity? Identity = null,
     TransactionInfo? Transaction = null,
     string? TraceParent = null,
-    string? TraceState = null);
+    string? TraceState = null,
+    TimeSpan? TimeToLive = null);

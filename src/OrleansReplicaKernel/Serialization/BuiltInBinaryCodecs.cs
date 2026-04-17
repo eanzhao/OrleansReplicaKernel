@@ -706,6 +706,7 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         TransactionInfo? transaction = null;
         string? traceParent = null;
         string? traceState = null;
+        TimeSpan? timeToLive = null;
 
         while (reader.TryReadField(out var fieldId, out var payload))
         {
@@ -750,6 +751,9 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
                 case 13:
                     traceState = serializer.ReadOptional<string>(payload);
                     break;
+                case 14:
+                    timeToLive = serializer.ReadNullable<TimeSpan>(payload);
+                    break;
             }
         }
 
@@ -766,7 +770,8 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
             identity,
             transaction,
             traceParent,
-            traceState);
+            traceState,
+            timeToLive);
     }
 
     protected override void WriteFields(BinaryObjectWriter writer, InvocationMessage value, BinarySerializer serializer)
@@ -784,6 +789,7 @@ internal sealed class InvocationMessageBinaryCodec : BinaryObjectCodec<Invocatio
         writer.WriteOptionalField(11, value.Transaction, serializer);
         writer.WriteOptionalField(12, value.TraceParent, serializer);
         writer.WriteOptionalField(13, value.TraceState, serializer);
+        writer.WriteNullableField(14, value.TimeToLive, serializer);
     }
 }
 
