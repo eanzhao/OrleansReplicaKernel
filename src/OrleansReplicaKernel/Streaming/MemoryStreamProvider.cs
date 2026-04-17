@@ -15,8 +15,10 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly Dictionary<StreamId, StreamState> _streams = new();
     private readonly HashSet<(StreamId StreamId, Guid SubscriptionId)> _inflight = [];
+    private readonly Dictionary<(StreamId, Guid), DeliveryFailureState> _failures = new();
     private readonly Task _loop;
     private IInvocationRuntime? _runtime;
+    private ImplicitStreamSubscriptionRegistry? _implicitRegistry;
 
     public MemoryStreamProvider(
         MemoryStreamProviderConfiguration configuration,
@@ -31,9 +33,10 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
 
     public string ProviderName => _configuration.ProviderName;
 
-    public void Bind(IInvocationRuntime runtime)
+    public void Bind(IInvocationRuntime runtime, ImplicitStreamSubscriptionRegistry? implicitRegistry = null)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+        _implicitRegistry = implicitRegistry;
     }
 
     public IAsyncStream<T> GetStream<T>(StreamId streamId)
@@ -133,11 +136,19 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            await EnsureImplicitSubscriptionsAsync(streamId, cancellationToken);
+
             var subscriptions = await GetPubSubReference(streamId).GetSubscriptionsAsync(cancellationToken);
             foreach (var subscription in subscriptions)
             {
                 if (!TryMarkInflight(streamId, subscription.SubscriptionId))
                 {
+                    continue;
+                }
+
+                if (ShouldBackoff(streamId, subscription.SubscriptionId))
+                {
+                    ClearInflight(streamId, subscription.SubscriptionId);
                     continue;
                 }
 
@@ -161,6 +172,34 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
 
                 _ = DeliverAsync(streamId, subscription, batch, cancellationToken);
             }
+        }
+    }
+
+    private async Task EnsureImplicitSubscriptionsAsync(StreamId streamId, CancellationToken cancellationToken)
+    {
+        if (_implicitRegistry is null) return;
+
+        var implicitGrainIds = _implicitRegistry.GetImplicitSubscribers(streamId);
+        if (implicitGrainIds.Count == 0) return;
+
+        string payloadTypeName;
+        long initialSequenceToken;
+        lock (_lock)
+        {
+            if (!_streams.TryGetValue(streamId, out var streamState)) return;
+            payloadTypeName = streamState.PayloadTypeName;
+            initialSequenceToken = 1;
+        }
+
+        var pubSub = GetPubSubReference(streamId);
+        foreach (var grainId in implicitGrainIds)
+        {
+            await pubSub.RegisterSubscriptionAsync(
+                grainId,
+                payloadTypeName,
+                initialSequenceToken,
+                _timeProvider.GetUtcNow(),
+                cancellationToken);
         }
     }
 
@@ -190,6 +229,8 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
                 {
                     streamState.PruneEventsUpTo(batch.NextSequenceToken);
                 }
+
+                _failures.Remove((streamId, subscription.SubscriptionId));
             }
 
             TraceLog.Write(
@@ -198,13 +239,76 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            TraceLog.Write(
-                "stream",
-                $"deliver failed {streamId} -> {subscription.SubscriberGrainId}: {exception.Message}");
+            var failureKey = (streamId, subscription.SubscriptionId);
+            lock (_lock)
+            {
+                if (!_failures.TryGetValue(failureKey, out var state))
+                {
+                    state = new DeliveryFailureState();
+                    _failures[failureKey] = state;
+                }
+
+                state.ConsecutiveFailures++;
+                state.NextRetryUtc = _timeProvider.GetUtcNow().Add(
+                    ComputeBackoff(state.ConsecutiveFailures));
+
+                if (state.ConsecutiveFailures >= _configuration.MaxDeliveryAttempts)
+                {
+                    state.DeadLetterEvents.AddRange(batch.Events);
+                    _failures.Remove(failureKey);
+
+                    _ = GetPubSubReference(streamId).CommitBatchAsync(
+                        subscription.SubscriptionId,
+                        subscription.NextSequenceToken,
+                        batch.NextSequenceToken,
+                        _timeProvider.GetUtcNow(),
+                        cancellationToken);
+
+                    TraceLog.Write(
+                        "stream",
+                        $"dead-letter {streamId} -> {subscription.SubscriberGrainId}: {batch.Events.Count} events after {_configuration.MaxDeliveryAttempts} failures");
+                }
+                else
+                {
+                    TraceLog.Write(
+                        "stream",
+                        $"deliver failed {streamId} -> {subscription.SubscriberGrainId} (attempt {state.ConsecutiveFailures}/{_configuration.MaxDeliveryAttempts}): {exception.Message}");
+                }
+            }
         }
         finally
         {
             ClearInflight(streamId, subscription.SubscriptionId);
+        }
+    }
+
+    private bool ShouldBackoff(StreamId streamId, Guid subscriptionId)
+    {
+        lock (_lock)
+        {
+            if (_failures.TryGetValue((streamId, subscriptionId), out var state)
+                && state.NextRetryUtc > _timeProvider.GetUtcNow())
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static TimeSpan ComputeBackoff(int consecutiveFailures)
+    {
+        var delayMs = Math.Min(100 * Math.Pow(2, consecutiveFailures - 1), 30_000);
+        return TimeSpan.FromMilliseconds(delayMs);
+    }
+
+    public IReadOnlyList<StreamEventEnvelope> GetDeadLetterEvents(StreamId streamId, Guid subscriptionId)
+    {
+        lock (_lock)
+        {
+            return _failures.TryGetValue((streamId, subscriptionId), out var state)
+                ? state.DeadLetterEvents.ToArray()
+                : [];
         }
     }
 
@@ -295,6 +399,13 @@ internal sealed class MemoryStreamProvider : IAsyncDisposable
                 items[^1].SequenceToken + 1,
                 items);
         }
+    }
+
+    private sealed class DeliveryFailureState
+    {
+        public int ConsecutiveFailures { get; set; }
+        public DateTimeOffset NextRetryUtc { get; set; }
+        public List<StreamEventEnvelope> DeadLetterEvents { get; } = [];
     }
 
     private sealed class MemoryAsyncStream<T> : IAsyncStream<T>

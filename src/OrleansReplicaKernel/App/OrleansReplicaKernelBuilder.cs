@@ -235,7 +235,8 @@ public sealed class OrleansReplicaKernelBuilder
     public OrleansReplicaKernelBuilder UseMemoryStreamProvider(
         string providerName,
         int maxBatchSize = 32,
-        TimeSpan? dispatchInterval = null)
+        TimeSpan? dispatchInterval = null,
+        int maxDeliveryAttempts = 5)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
         if (maxBatchSize <= 0)
@@ -251,10 +252,16 @@ public sealed class OrleansReplicaKernelBuilder
                 "Stream dispatch interval must be positive.");
         }
 
+        if (maxDeliveryAttempts <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxDeliveryAttempts), "Max delivery attempts must be positive.");
+        }
+
         _memoryStreamProviders[providerName] = new MemoryStreamProviderConfiguration(
             providerName,
             maxBatchSize,
-            effectiveDispatchInterval);
+            effectiveDispatchInterval,
+            maxDeliveryAttempts);
         return this;
     }
 
@@ -1266,15 +1273,38 @@ public sealed class OrleansReplicaKernelBuilder
         BinarySerializer serializer,
         InProcessRuntime runtime)
     {
+        var implicitRegistry = BuildImplicitStreamSubscriptionRegistry();
         var providers = new Dictionary<string, MemoryStreamProvider>(StringComparer.Ordinal);
         foreach (var configuration in _memoryStreamProviders.Values.OrderBy(item => item.ProviderName, StringComparer.Ordinal))
         {
             var provider = new MemoryStreamProvider(configuration, serializer, _timeProvider);
-            provider.Bind(runtime);
+            provider.Bind(runtime, implicitRegistry);
             providers.Add(configuration.ProviderName, provider);
         }
 
         return providers;
+    }
+
+    private ImplicitStreamSubscriptionRegistry BuildImplicitStreamSubscriptionRegistry()
+    {
+        var registry = new ImplicitStreamSubscriptionRegistry();
+        foreach (var assembly in _generatedGrainImplementationAssemblies)
+        {
+            foreach (var type in GetLoadableTypes(assembly))
+            {
+                if (type is null || !type.IsClass || type.IsAbstract) continue;
+
+                var grainAttr = type.GetCustomAttributes<GeneratedGrainImplementationAttribute>().FirstOrDefault();
+                if (grainAttr is null) continue;
+
+                foreach (var implicitAttr in type.GetCustomAttributes<ImplicitStreamSubscriptionAttribute>())
+                {
+                    registry.Register(implicitAttr.ProviderName, implicitAttr.StreamNamespace, grainAttr.GrainType);
+                }
+            }
+        }
+
+        return registry;
     }
 
     private static void RegisterSystemTargets(
